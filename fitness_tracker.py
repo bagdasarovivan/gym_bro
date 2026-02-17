@@ -332,24 +332,29 @@ with tab_add:
             key="workout_date"
         )
 
-    q = st.text_input("Search exercise", "")
-    filtered = [x for x in ex_names if q.lower() in x.lower()] if q else ex_names
-
-    fav = [x for x in FAVORITE_EXERCISES if x in filtered]
-    rest = [x for x in filtered if x not in fav]
+    fav = [x for x in FAVORITE_EXERCISES if x in ex_names]
+    rest = [x for x in ex_names if x not in fav]
     ex_options = fav + rest
 
-    if not ex_options:
-        st.info("No exercises match your search.")
+    cA, cB = st.columns([3, 1])
+
+    with cA:
+        exercise_name_to_use = st.selectbox(
+            "Exercise",
+            ex_options,
+            index=None,
+            placeholder="Select exercise",
+            key="add_exercise_select"
+        )
+
+    if not exercise_name_to_use:
         st.stop()
 
-    cA, cB = st.columns([3, 1])
-    with cA:
-        exercise_name_to_use = st.selectbox("Exercise", ex_options, key="add_exercise_select")
     with cB:
         img_path = EXERCISE_IMAGES.get(exercise_name_to_use)
         if img_path:
             st.image(img_path, width=120)
+
 
     # --- Last workout (does NOT control whether Sets render) ---
     last_df = get_last_workout_for_exercise(conn, exercise_name_to_use)
