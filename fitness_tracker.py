@@ -210,6 +210,43 @@ st.set_page_config(
     page_icon="images/gymbro_icon.png",
     layout="centered"
 )
+
+st.markdown("""
+<style>
+
+/* Мобильная адаптация */
+@media (max-width: 768px) {
+
+    h1 {
+        font-size: 32px !important;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 40px !important;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        font-size: 16px !important;
+        padding: 12px 0px !important;
+    }
+
+    img {
+        max-width: 100% !important;
+        height: auto !important;
+    }
+
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 2rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
 st.markdown("""
 <style>
 
