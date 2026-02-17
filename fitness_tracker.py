@@ -332,9 +332,17 @@ with tab_add:
             key="workout_date"
         )
 
-    fav = [x for x in FAVORITE_EXERCISES if x in ex_names]
-    rest = [x for x in ex_names if x not in fav]
+    q = st.text_input("Search exercise", "")
+
+    filtered = [x for x in ex_names if q.lower() in x.lower()] if q else ex_names
+
+    fav = [x for x in FAVORITE_EXERCISES if x in filtered]
+    rest = [x for x in filtered if x not in fav]
     ex_options = fav + rest
+
+    if not ex_options:
+        st.info("No exercises match your search.")
+        st.stop()
 
     cA, cB = st.columns([3, 1])
 
