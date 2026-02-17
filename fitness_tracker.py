@@ -4,6 +4,8 @@ import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import date
+from sqlalchemy import create_engine, text
+
 
 DB_PATH = "fitness.db"
 
@@ -210,6 +212,18 @@ st.set_page_config(
     page_icon="images/gymbro_icon.png",
     layout="centered"
 )
+
+# --- Supabase connection test (temporary) ---
+if "DB_URL" in st.secrets:
+    try:
+        engine = create_engine(st.secrets["DB_URL"])
+        with engine.connect() as c:
+            c.execute(text("SELECT 1"))
+        st.success("✅ Supabase DB connected")
+    except Exception as e:
+        st.error(f"❌ Supabase DB connect failed: {e}")
+# -------------------------------------------
+
 
 st.markdown("""
 <style>
