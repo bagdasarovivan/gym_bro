@@ -575,9 +575,8 @@ with tab_add:
 
     exercise_name = st.selectbox(
         "Exercise",
-        ["— Select exercise —"] + ex_options,
-        index=0,
-        key="add_exercise_select",
+        ex_options,
+        key="add_exercise_select"
     )
     if exercise_name == "— Select exercise —":
         st.stop()
@@ -717,43 +716,6 @@ def read_sets_from_widgets(ns: str, sets_count: int, mode: str) -> list[dict]:
             r = int(st.session_state.get(f"{ns}_r_{i}", 0))
             rows.append({"weight": w, "reps": r})
     return rows
-
-if st.button("💾 Save workout", key=f"{ns}_save_btn"):
-
-    # 1) забираем актуальные значения из session_state
-    current_sets = st.session_state[sets_key]
-
-    # 2) чистим
-    if profile["mode"] == "time":
-        cleaned = [s for s in current_sets if s.get("time_sec", 0) > 0]
-        normalized = [{"weight": 0, "reps": 0, "time_sec": int(s["time_sec"])} for s in cleaned]
-    else:
-        cleaned = [s for s in current_sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
-        normalized = [{"weight": int(s["weight"]), "reps": int(s["reps"]), "time_sec": None} for s in cleaned]
-
-    if not normalized:
-        st.error("Add at least one filled set.")
-        st.stop()
-
-    try:
-        ex_id = upsert_exercise(conn, exercise_name)
-        insert_workout(conn, str(workout_date), ex_id, normalized)
-
-        st.success("Saved ✅")
-
-        # reset sets
-        st.session_state[sets_key] = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
-
-        # очистка ключей виджетов (по желанию, но полезно)
-        for i in range(1, 60):
-            st.session_state.pop(f"{ns}_w_{i}", None)
-            st.session_state.pop(f"{ns}_r_{i}", None)
-            st.session_state.pop(f"{ns}_t_{i}", None)
-
-        st.rerun()
-
-    except Exception as e:
-        st.error(f"Save failed: {e}")
 
 # ============================
 # TAB: History (FAST + COPY + EDIT)
