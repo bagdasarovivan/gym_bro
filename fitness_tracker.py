@@ -395,7 +395,7 @@ with tab_add:
             st.image(img_path, width=120)
 
     # --- Last workout (does NOT control whether Sets render) ---
-    last_df = get_last_workout_for_exercise(conn, exercise_name_to_use)
+    last_df = get_last_workout_df(exercise_name_to_use)
     if last_df is not None:
         st.markdown("#### Last workout")
         date_str = str(last_df.iloc[0]["workout_date"])
