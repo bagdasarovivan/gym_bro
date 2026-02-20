@@ -471,7 +471,9 @@ def get_workout_for_edit(conn: sqlite3.Connection, workout_id: int) -> dict:
 # COPY TO CLIPBOARD (JS)
 # =========================
 def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "copy_btn"):
-    safe = text.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+    # Надёжно превращаем текст в JS-строку (экранирует кавычки/переводы строк/слэши)
+    js_text = json.dumps(text, ensure_ascii=False)
+
     html = f"""
     <div style="margin: 8px 0;">
       <button id="{key}" style="
@@ -481,11 +483,24 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
       </button>
       <span id="{key}_status" style="margin-left:10px; opacity:.8; font-size: 13px;"></span>
     </div>
+
     <script>
-      const btn = document.getElementById("{key}");
-      const status = document.getElementById("{key}_status}");
+      const btn = document.getElementById({json.dumps(key)});
+      const status = document.getElementById({json.dumps(key + "_status")});
+
+      btn.onclick = async () => {{
+        try {{
+          await navigator.clipboard.writeText({js_text});
+          status.textContent = "Copied ✅";
+          setTimeout(() => status.textContent = "", 1200);
+        }} catch (e) {{
+          status.textContent = "Copy failed (browser blocked)";
+          setTimeout(() => status.textContent = "", 1800);
+        }}
+      }};
     </script>
     """
+    components.html(html, height=60)
     # Fix small JS typo safely by rendering correct script below
     html = f"""
     <div style="margin: 8px 0;">
