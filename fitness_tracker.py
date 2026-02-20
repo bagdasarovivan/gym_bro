@@ -593,19 +593,22 @@ with tab_add:
         st.session_state[sets_key] = [{"time_sec": 0}] if mode == "time" else [{"weight": 0, "reps": 0}]
 
     # Controls: add/remove set
-    c_add, c_remove, _ = st.columns([1, 1, 6])
+    c_spacer1, c_add, c_remove, c_spacer2 = st.columns([3, 1, 1, 3])
+
     with c_add:
         if st.button("➕ Add set", key=f"{ns}_add_set"):
-            st.session_state[sets_key].append({"time_sec": 0} if mode == "time" else {"weight": 0, "reps": 0})
+            st.session_state[sets_key].append(
+                {"time_sec": 0} if mode == "time" else {"weight": 0, "reps": 0}
+            )
             st.rerun()
+
     with c_remove:
-        if st.button("➖ Remove set", key=f"{ns}_remove_set", disabled=len(st.session_state[sets_key]) <= 1):
+        if st.button(
+            "➖ Remove set",
+            key=f"{ns}_remove_set",
+            disabled=len(st.session_state[sets_key]) <= 1,
+        ):
             st.session_state[sets_key] = st.session_state[sets_key][:-1]
-            # also remove last widget keys
-            last = len(st.session_state[sets_key]) + 1
-            st.session_state.pop(f"{ns}_w_{last}", None)
-            st.session_state.pop(f"{ns}_r_{last}", None)
-            st.session_state.pop(f"{ns}_t_{last}", None)
             st.rerun()
 
     # ---- Sets form ----
