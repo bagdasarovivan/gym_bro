@@ -756,30 +756,28 @@ with tab_history:
         st.info("No records for current filters.")
         st.stop()
 
-    # Copy history text
-    lines = []
-    for _, r in view.iterrows():
-        lines.append(f"{r['workout_date']} — {r['exercise']}: {r['sets']}")
-    history_text = "\n".join(lines)
-
-    st.markdown("### Export / Copy")
-    copy_to_clipboard_button(history_text, key="copy_history_btn")
-
-    st.download_button(
-        "⬇️ Download history (.txt)",
-        data=history_text.encode("utf-8"),
-        file_name="gymbro_history.txt",
-        mime="text/plain"
-    )
+   
 
     st.markdown("---")
 
     # Render day groups
     # Grouping in pandas is fine because view is already compact & small
+    # Render day groups
     for day, day_df in view.groupby("workout_date", sort=False):
-        with st.expander(f"📅 {day}  ·  {len(day_df)} entries", expanded=True):
-            day_df = day_df.sort_values("workout_id", ascending=False)
+        day_df = day_df.sort_values("workout_id", ascending=False)
 
+        # text to copy for this day
+        day_text = "\n".join(
+            [f"{rr['workout_date']} — {rr['exercise']}: {rr['sets']}" for _, rr in day_df.iterrows()]
+        )
+
+        h1, h2 = st.columns([6, 2])
+        with h1:
+            st.markdown(f"#### 📅 {day} · {len(day_df)} entries")
+        with h2:
+            copy_to_clipboard_button(day_text, key=f"copy_day_{str(day)}")
+
+        with st.expander("Show", expanded=True):
             for _, r in day_df.iterrows():
                 workout_id = int(r["workout_id"])
 
@@ -787,44 +785,26 @@ with tab_history:
 
                 with left:
                     st.markdown(f"**{r['exercise']}**")
-                    # show as chips
-                    chips = "".join([f'<span class="set-chip">{s.strip()}</span>' for s in str(r["sets"]).split("|")])
+                    chips = "".join(
+                        [f'<span class="set-chip">{s.strip()}</span>' for s in str(r["sets"]).split("|")]
+                    )
                     st.markdown(f'<div class="sets-wrap">{chips}</div>', unsafe_allow_html=True)
 
                 with mid:
                     pop = st.popover("✏️ Edit", use_container_width=True)
                     with pop:
-                        try:
-                            data = get_workout_for_edit(conn, workout_id)
-                        except Exception as e:
-                            st.error(str(e))
-                            st.stop()
+                        data = get_workout_for_edit(conn, workout_id)
 
-                        st.markdown("**Edit workout**")
-                        new_date = st.date_input(
-                            "Date",
-                            value=pd.to_datetime(data["workout_date"]).date(),
-                            key=f"edit_date_{workout_id}"
-                        )
-
-                        ex_df2 = get_exercises_df()
-                        ex_names2 = ex_df2["name"].tolist()
-                        new_ex = st.selectbox(
-                            "Exercise",
-                            ex_names2,
-                            index=ex_names2.index(data["exercise"]) if data["exercise"] in ex_names2 else 0,
-                            key=f"edit_ex_{workout_id}"
-                        )
-
-                        ex_type = EXERCISE_TYPE.get(new_ex, "light")
+                        # тут нужно определить mode + profile для ЭТОЙ записи
+                        ex_name = str(data["exercise_name"])
+                        ex_type = EXERCISE_TYPE.get(ex_name, "light")
                         profile = TYPE_PROFILES[ex_type]
-                        mode = profile["mode"]
+                        mode = profile["mode"]  # "time" или "weight_reps"
 
-                        # sets editor
+                        # ---------- sets editor START ----------
                         current_sets = data["sets"].to_dict("records")
-                        # normalize current sets into mode
+
                         if mode == "time":
-                            # if old was weight sets, convert to time=0
                             norm = []
                             for s in current_sets:
                                 t = int(s["time_sec"]) if pd.notna(s["time_sec"]) else 0
@@ -847,7 +827,6 @@ with tab_history:
                             key=f"edit_cnt_{workout_id}"
                         )
 
-                        # resize list to cnt
                         while len(current_sets) < cnt:
                             current_sets.append({"time_sec": 0} if mode == "time" else {"weight": 0, "reps": 0})
                         while len(current_sets) > cnt:
@@ -882,7 +861,6 @@ with tab_history:
                                     )
                                 edited_rows.append({"weight": int(w), "reps": int(rr), "time_sec": None})
 
-                        # Validate: at least one filled set
                         if mode == "time":
                             cleaned = [s for s in edited_rows if s.get("time_sec", 0) > 0]
                         else:
@@ -892,20 +870,14 @@ with tab_history:
                             if not cleaned:
                                 st.error("Fill at least one set.")
                             else:
-                                ex_id = upsert_exercise(conn, new_ex)
-                                update_workout_full(conn, workout_id, str(new_date), ex_id, cleaned)
+                                # если ты НЕ редактируешь дату/упражнение — сохраняй старые:
+                                ex_id = int(data["exercise_id"])
+                                w_date = str(data["workout_date"])
+
+                                update_workout_full(conn, workout_id, w_date, ex_id, cleaned)
                                 st.success("Updated ✅")
                                 st.rerun()
-
-                with right:
-                    pop = st.popover("🗑 Delete", use_container_width=True)
-                    with pop:
-                        st.write("Delete this entry?")
-                        confirm = st.checkbox("Confirm", key=f"confirm_{workout_id}")
-                        if st.button("Delete", key=f"del_{workout_id}", disabled=not confirm):
-                            delete_workout(conn, workout_id)
-                            st.success("Deleted ✅")
-                            st.rerun()
+                        # ---------- sets editor END ----------
 
 # ============================
 # TAB: Progress (FAST)
