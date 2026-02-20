@@ -187,6 +187,19 @@ def safe_image(rel_path: str, width: int | None = None):
     except Exception:
         # Absolute no-crash policy
         return
+    
+def read_sets_from_widgets(ns: str, sets_count: int, mode: str) -> list[dict]:
+    rows = []
+    if mode == "time":
+        for i in range(1, sets_count + 1):
+            t = int(st.session_state.get(f"{ns}_t_{i}", 0))
+            rows.append({"time_sec": t})
+    else:
+        for i in range(1, sets_count + 1):
+            w = int(st.session_state.get(f"{ns}_w_{i}", 0))
+            r = int(st.session_state.get(f"{ns}_r_{i}", 0))
+            rows.append({"weight": w, "reps": r})
+    return rows
 
 # =========================
 # DB HELPERS (SQLite only for max speed)
@@ -539,185 +552,163 @@ tab_add, tab_history, tab_progress = st.tabs(["➕ Add workout", "📜 History",
 # ============================
 # TAB: Add workout
 # ============================
-with tab_add:
-    st.subheader("Add workout")
+# ---------- Sets form ----------
+sets_rows: list[dict] = []
 
-    ex_df = get_exercises_df()
-    ex_names = ex_df["name"].tolist()
-    if not ex_names:
-        st.warning("No exercises found.")
-        st.stop()
+with st.form(f"sets_form_{ns}", clear_on_submit=False):
+    for idx, s in enumerate(st.session_state[sets_key], start=1):
+        if profile["mode"] == "time":
+            key_t = f"{ns}_t_{idx}"
+            current_t = st.session_state.get(key_t, s.get("time_sec", 0))
+            t = st.selectbox(
+                f"Set {idx} — Time (sec)",
+                profile["time_options"],
+                index=profile["time_options"].index(current_t) if current_t in profile["time_options"] else 0,
+                key=key_t
+            )
+            sets_rows.append({"time_sec": int(t)})
+        else:
+            c1, c2 = st.columns(2)
+            key_w = f"{ns}_w_{idx}"
+            key_r = f"{ns}_r_{idx}"
+            current_w = st.session_state.get(key_w, s.get("weight", 0))
+            current_r = st.session_state.get(key_r, s.get("reps", 0))
 
-    date_col, _ = st.columns([1, 4])
-    with date_col:
-        workout_date = st.date_input(
-            "📅 Date",
-            value=date.today(),
-            min_value=date(2020, 1, 1),
-            max_value=date.today(),
-            key="workout_date"
-        )
+            with c1:
+                w = st.selectbox(
+                    f"Set {idx} — Weight (kg)",
+                    profile["weight_options"],
+                    index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
+                    key=key_w
+                )
+            with c2:
+                r = st.selectbox(
+                    f"Set {idx} — Reps",
+                    profile["reps_options"],
+                    index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
+                    key=key_r
+                )
+            sets_rows.append({"weight": int(w), "reps": int(r)})
 
-    q = st.text_input("Search exercise", "", key="search_ex")
+    apply = st.form_submit_button("✅ Apply sets")
 
-    filtered = [x for x in ex_names if q.lower() in x.lower()] if q else ex_names
-    fav = [x for x in FAVORITE_EXERCISES if x in filtered]
-    rest = [x for x in filtered if x not in fav]
-    ex_options = fav + rest
+# Apply updates (optional, for instant summary refresh)
+if apply:
+    st.session_state[sets_key] = sets_rows
+    st.rerun()
 
-    cA, cB = st.columns([3, 1])
-    with cA:
-        exercise_name = st.selectbox(
-            "Exercise",
-            ex_options,
-            index=None,
-            placeholder="Select exercise",
-            key="add_exercise_select"
-        )
+# ---------- Session summary ----------
+st.markdown("### Session summary")
 
-    if not exercise_name:
-        st.stop()
+# show summary based on current widgets (so it matches what's on screen)
+current_sets = read_sets_from_widgets(ns, len(st.session_state[sets_key]), profile["mode"])
+st.session_state[sets_key] = current_sets  # keep state consistent
 
-    ns = f"{workout_date}_{exercise_name}".replace(" ", "_")
-    sets_key = f"sets_{ns}"
+if profile["mode"] == "time":
+    filled = [s for s in current_sets if s.get("time_sec", 0) > 0]
+    total_t = sum(s["time_sec"] for s in filled) if filled else 0
+    st.info(f"Sets: {len(filled)} | Total time: {total_t} sec")
+    chips = "".join(
+        [f'<span class="set-chip"><strong>{i+1}</strong> · {s["time_sec"]}s</span>'
+         for i, s in enumerate(filled)]
+    )
+else:
+    filled = [s for s in current_sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
+    vol = sum(s["weight"] * s["reps"] for s in filled) if filled else 0
+    st.info(f"Sets: {len(filled)} | Total volume: {vol} kg")
+    chips = "".join(
+        [f'<span class="set-chip"><strong>{i+1}</strong> · {s["weight"]}×{s["reps"]}</span>'
+         for i, s in enumerate(filled)]
+    )
 
-    with cB:
-        img_path = EXERCISE_IMAGES.get(exercise_name)
-        if img_path:
-            safe_image(img_path, width=120)
+st.markdown(f'<div class="sets-wrap">{chips}</div>', unsafe_allow_html=True)
 
-    last_info = get_last_workout_compact(exercise_name)
-    if last_info:
-        st.markdown("#### Last workout")
-        st.caption(f"{last_info['date']} — {last_info['sets_text']}")
+# ---------- Save workout (outside form) ----------
+if st.button("💾 Save workout", key=f"{ns}_save_btn"):
+    try:
+        # read exact on-screen values
+        current_sets = read_sets_from_widgets(ns, len(st.session_state[sets_key]), profile["mode"])
+        st.session_state[sets_key] = current_sets
 
-    ex_type = EXERCISE_TYPE.get(exercise_name, "light")
-    profile = TYPE_PROFILES[ex_type]
+        if profile["mode"] == "time":
+            cleaned = [s for s in current_sets if s.get("time_sec", 0) > 0]
+            normalized = [{"weight": 0, "reps": 0, "time_sec": int(s["time_sec"])} for s in cleaned]
+        else:
+            cleaned = [s for s in current_sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
+            normalized = [{"weight": int(s["weight"]), "reps": int(s["reps"]), "time_sec": None} for s in cleaned]
 
-    # Init sets per exercise+date namespace
-    if sets_key not in st.session_state:
+        if not normalized:
+            st.error("Add at least one filled set.")
+            st.stop()
+
+        ex_id = upsert_exercise(conn, exercise_name)
+        insert_workout(conn, str(workout_date), ex_id, normalized)
+
+        st.success("Saved ✅")
+
+        # reset sets for this namespace
         st.session_state[sets_key] = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
 
-    # Mode consistency
-    if profile["mode"] == "time":
-        if not st.session_state[sets_key] or "time_sec" not in st.session_state[sets_key][0]:
-            st.session_state[sets_key] = [{"time_sec": 0}]
+        # clear widget keys
+        for i in range(1, 60):
+            st.session_state.pop(f"{ns}_w_{i}", None)
+            st.session_state.pop(f"{ns}_r_{i}", None)
+            st.session_state.pop(f"{ns}_t_{i}", None)
+
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"Save failed: {e}")
+
+def read_sets_from_widgets(ns: str, sets_count: int, mode: str) -> list[dict]:
+    rows = []
+    if mode == "time":
+        for i in range(1, sets_count + 1):
+            t = int(st.session_state.get(f"{ns}_t_{i}", 0))
+            rows.append({"time_sec": t})
     else:
-        if not st.session_state[sets_key] or "weight" not in st.session_state[sets_key][0]:
-            st.session_state[sets_key] = [{"weight": 0, "reps": 0}]
+        for i in range(1, sets_count + 1):
+            w = int(st.session_state.get(f"{ns}_w_{i}", 0))
+            r = int(st.session_state.get(f"{ns}_r_{i}", 0))
+            rows.append({"weight": w, "reps": r})
+    return rows
 
-    st.markdown("### Sets")
+if st.button("💾 Save workout", key=f"{ns}_save_btn"):
 
-    c_plus, c_minus = st.columns([1, 1])
-    with c_plus:
-        if st.button("➕ Add set", key=f"{ns}_add_set_btn"):
-            if profile["mode"] == "time":
-                last_t = st.session_state[sets_key][-1].get("time_sec", 0)
-                st.session_state[sets_key].append({"time_sec": int(last_t)})
-            else:
-                last_w = st.session_state[sets_key][-1].get("weight", 0)
-                st.session_state[sets_key].append({"weight": int(last_w), "reps": 0})
-            st.rerun()
+    # 1) забираем актуальные значения из session_state
+    current_sets = st.session_state[sets_key]
 
-    with c_minus:
-        if st.button("➖ Remove last", key=f"{ns}_remove_set_btn"):
-            if len(st.session_state[sets_key]) > 1:
-                st.session_state[sets_key].pop()
-                i = len(st.session_state[sets_key]) + 1
-                st.session_state.pop(f"{ns}_w_{i}", None)
-                st.session_state.pop(f"{ns}_r_{i}", None)
-                st.session_state.pop(f"{ns}_t_{i}", None)
-                st.rerun()
-
-    # IMPORTANT: Save button inside the form
-    sets_rows: list[dict] = []
-    with st.form(f"sets_form_{ns}", clear_on_submit=False):
-        for idx, s in enumerate(st.session_state[sets_key], start=1):
-            if profile["mode"] == "time":
-                key_t = f"{ns}_t_{idx}"
-                current_t = st.session_state.get(key_t, s.get("time_sec", 0))
-                t = st.selectbox(
-                    f"Set {idx} — Time (sec)",
-                    profile["time_options"],
-                    index=profile["time_options"].index(current_t) if current_t in profile["time_options"] else 0,
-                    key=key_t
-                )
-                sets_rows.append({"time_sec": int(t)})
-            else:
-                c1, c2 = st.columns(2)
-                key_w = f"{ns}_w_{idx}"
-                key_r = f"{ns}_r_{idx}"
-                current_w = st.session_state.get(key_w, s.get("weight", 0))
-                current_r = st.session_state.get(key_r, s.get("reps", 0))
-
-                with c1:
-                    w = st.selectbox(
-                        f"Set {idx} — Weight (kg)",
-                        profile["weight_options"],
-                        index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
-                        key=key_w
-                    )
-                with c2:
-                    r = st.selectbox(
-                        f"Set {idx} — Reps",
-                        profile["reps_options"],
-                        index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
-                        key=key_r
-                    )
-                sets_rows.append({"weight": int(w), "reps": int(r)})
-
-        b_apply, b_save = st.columns([1, 1])
-        with b_apply:
-            apply = st.form_submit_button("✅ Apply sets")
-        with b_save:
-            save = st.form_submit_button("💾 Save workout")
-
-    # apply updates to state
-    if apply or save:
-        st.session_state[sets_key] = sets_rows
-
-    # Summary + better visibility
-    st.markdown("### Session summary")
+    # 2) чистим
     if profile["mode"] == "time":
-        filled = [s for s in st.session_state[sets_key] if s.get("time_sec", 0) > 0]
-        total_t = sum(s["time_sec"] for s in filled) if filled else 0
-        st.info(f"Sets: {len(filled)} | Total time: {total_t} sec")
-        chips = "".join([f'<span class="set-chip"><strong>{i+1}</strong> · {s["time_sec"]}s</span>' for i, s in enumerate(filled)])
+        cleaned = [s for s in current_sets if s.get("time_sec", 0) > 0]
+        normalized = [{"weight": 0, "reps": 0, "time_sec": int(s["time_sec"])} for s in cleaned]
     else:
-        filled = [s for s in st.session_state[sets_key] if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
-        vol = sum(s["weight"] * s["reps"] for s in filled) if filled else 0
-        st.info(f"Sets: {len(filled)} | Total volume: {vol} kg")
-        chips = "".join([f'<span class="set-chip"><strong>{i+1}</strong> · {s["weight"]}×{s["reps"]}</span>' for i, s in enumerate(filled)])
+        cleaned = [s for s in current_sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
+        normalized = [{"weight": int(s["weight"]), "reps": int(s["reps"]), "time_sec": None} for s in cleaned]
 
-    st.markdown(f'<div class="sets-wrap">{chips}</div>', unsafe_allow_html=True)
+    if not normalized:
+        st.error("Add at least one filled set.")
+        st.stop()
 
-    if save:
-        try:
-            if profile["mode"] == "time":
-                cleaned = [s for s in st.session_state[sets_key] if s.get("time_sec", 0) > 0]
-                normalized = [{"weight": 0, "reps": 0, "time_sec": int(s["time_sec"])} for s in cleaned]
-            else:
-                cleaned = [s for s in st.session_state[sets_key] if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
-                normalized = [{"weight": int(s["weight"]), "reps": int(s["reps"]), "time_sec": None} for s in cleaned]
+    try:
+        ex_id = upsert_exercise(conn, exercise_name)
+        insert_workout(conn, str(workout_date), ex_id, normalized)
 
-            if not normalized:
-                st.error("Add at least one filled set.")
-                st.stop()
+        st.success("Saved ✅")
 
-            ex_id = upsert_exercise(conn, exercise_name)
-            insert_workout(conn, str(workout_date), ex_id, normalized)
-            st.success("Saved ✅")
+        # reset sets
+        st.session_state[sets_key] = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
 
-            # reset current namespace sets
-            st.session_state[sets_key] = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
-            for i in range(1, 60):
-                st.session_state.pop(f"{ns}_w_{i}", None)
-                st.session_state.pop(f"{ns}_r_{i}", None)
-                st.session_state.pop(f"{ns}_t_{i}", None)
+        # очистка ключей виджетов (по желанию, но полезно)
+        for i in range(1, 60):
+            st.session_state.pop(f"{ns}_w_{i}", None)
+            st.session_state.pop(f"{ns}_r_{i}", None)
+            st.session_state.pop(f"{ns}_t_{i}", None)
 
-            st.rerun()
-        except Exception as e:
-            st.error(f"Save failed: {e}")
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"Save failed: {e}")
 
 # ============================
 # TAB: History (FAST + COPY + EDIT)
