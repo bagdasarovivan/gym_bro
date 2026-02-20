@@ -111,6 +111,7 @@ def get_conn():
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
+
 def init_db(conn: sqlite3.Connection):
     cur = conn.cursor()
 
@@ -142,20 +143,79 @@ def init_db(conn: sqlite3.Connection):
     )
     """)
 
+    # indexes for speed
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id)")
+
     conn.commit()
 
-def get_exercises(conn) -> pd.DataFrame:
+
+@st.cache_data(ttl=30)
+def get_exercises_df() -> pd.DataFrame:
+    conn = get_conn()
     return pd.read_sql_query("SELECT id, name FROM exercises ORDER BY name", conn)
+
+
+@st.cache_data(ttl=30)
+def get_history_df() -> pd.DataFrame:
+    conn = get_conn()
+    return pd.read_sql_query("""
+    SELECT
+        w.id AS workout_id,
+        w.workout_date,
+        e.name AS exercise,
+        s.set_no,
+        s.weight,
+        s.reps,
+        s.time_sec
+    FROM workouts w
+    JOIN exercises e ON e.id = w.exercise_id
+    JOIN sets s ON s.workout_id = w.id
+    ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
+    """, conn)
+
+
+@st.cache_data(ttl=30)
+def get_last_workout_df(exercise_name: str):
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT 
+            w.id as workout_id,
+            w.workout_date,
+            s.weight,
+            s.reps,
+            s.time_sec,
+            s.set_no
+        FROM workouts w
+        JOIN exercises e ON e.id = w.exercise_id
+        JOIN sets s ON s.workout_id = w.id
+        WHERE e.name = ?
+        ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
+    """, conn, params=(exercise_name,))
+
+    if df.empty:
+        return None
+
+    last_workout_id = int(df.iloc[0]["workout_id"])
+    return df[df["workout_id"] == last_workout_id].copy()
+
 
 def add_exercise(conn, name: str) -> int:
     name = name.strip()
     if not name:
         raise ValueError("Empty exercise name")
+
     cur = conn.cursor()
     cur.execute("INSERT OR IGNORE INTO exercises(name) VALUES(?)", (name,))
     conn.commit()
+
+    # invalidate caches affected by exercises list
+    get_exercises_df.clear()
+
     row = cur.execute("SELECT id FROM exercises WHERE name = ?", (name,)).fetchone()
     return int(row[0])
+
 
 def add_workout_with_sets(conn, workout_date: str, exercise_id: int, sets_rows: list[dict]):
     cur = conn.cursor()
@@ -180,43 +240,10 @@ def add_workout_with_sets(conn, workout_date: str, exercise_id: int, sets_rows: 
 
     conn.commit()
 
-def get_history(conn) -> pd.DataFrame:
-    return pd.read_sql_query("""
-    SELECT
-        w.id AS workout_id,
-        w.workout_date,
-        e.name AS exercise,
-        s.set_no,
-        s.weight,
-        s.reps,
-        s.time_sec
-    FROM workouts w
-    JOIN exercises e ON e.id = w.exercise_id
-    JOIN sets s ON s.workout_id = w.id
-    ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
-    """, conn)
+    # invalidate caches affected by workouts/sets
+    get_history_df.clear()
+    get_last_workout_df.clear()
 
-def get_last_workout_for_exercise(conn, exercise_name: str):
-    df = pd.read_sql_query("""
-        SELECT 
-            w.id as workout_id,
-            w.workout_date,
-            s.weight,
-            s.reps,
-            s.time_sec,
-            s.set_no
-        FROM workouts w
-        JOIN exercises e ON e.id = w.exercise_id
-        JOIN sets s ON s.workout_id = w.id
-        WHERE e.name = ?
-        ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
-    """, conn, params=(exercise_name,))
-
-    if df.empty:
-        return None
-
-    last_workout_id = int(df.iloc[0]["workout_id"])
-    return df[df["workout_id"] == last_workout_id].copy()
 
 def delete_workout(conn, workout_id: int):
     cur = conn.cursor()
@@ -224,28 +251,9 @@ def delete_workout(conn, workout_id: int):
     cur.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
     conn.commit()
 
-# ----------------- App -----------------
-st.set_page_config(
-    page_title="Gym BRO",
-    page_icon="images/gymbro_icon.png",
-    layout="centered"
-)
-
-# --- Supabase connection test (temporary) ---
-@st.cache_resource
-def test_supabase(db_url: str):
-    engine = create_engine(db_url, pool_pre_ping=True)
-    with engine.connect() as c:
-        c.execute(text("SELECT 1"))
-    return True
-
-if "DB_URL" in st.secrets:
-    try:
-        test_supabase(st.secrets["DB_URL"])
-        st.success("✅ Supabase DB connected")
-    except Exception as e:
-        st.error(f"❌ Supabase DB connect failed: {e}")
-# -------------------------------------------
+    # invalidate caches affected by workouts/sets
+    get_history_df.clear()
+    get_last_workout_df.clear()
 
 
 st.markdown("""
