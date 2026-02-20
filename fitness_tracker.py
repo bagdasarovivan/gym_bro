@@ -480,11 +480,11 @@ with tab_add:
         st.session_state.sets = sets_rows
         st.rerun()
 
-    # --- Add / Remove set buttons --- (снаружи формы)
+    # --- Add / Remove set buttons ---
     c_plus, c_minus = st.columns([1, 1])
 
     with c_plus:
-        if st.button("➕ Add set", key="add_set_btn"):
+        if st.button("➕ Add set", key=f"{ns}_add_set_btn"):
             if profile["mode"] == "time":
                 last_t = st.session_state.sets[-1].get("time_sec", 0) if st.session_state.sets else 0
                 st.session_state.sets.append({"time_sec": int(last_t)})
@@ -494,17 +494,21 @@ with tab_add:
             st.rerun()
 
     with c_minus:
-        if st.button("➖ Remove last", key="remove_set_btn"):
+        if st.button("➖ Remove last", key=f"{ns}_remove_set_btn"):
             if len(st.session_state.sets) > 1:
                 st.session_state.sets.pop()
-                i = len(st.session_state.sets) + 1
+                i = len(st.session_state.sets) + 1  # index of removed set (1-based)
                 st.session_state.pop(f"{ns}_w_{i}", None)
                 st.session_state.pop(f"{ns}_r_{i}", None)
                 st.session_state.pop(f"{ns}_t_{i}", None)
                 st.rerun()
 
-    if st.button("💾 Save workout"):
+    # ----------------- Save -----------------
+    if st.button("💾 Save workout", key=f"{ns}_save_workout"):
         try:
+            # IMPORTANT: always save what is currently selected on screen
+            st.session_state.sets = sets_rows
+
             if profile["mode"] == "time":
                 cleaned = [s for s in st.session_state.sets if s.get("time_sec", 0) > 0]
             else:
@@ -521,47 +525,25 @@ with tab_add:
                 else:
                     normalized.append({"weight": int(s["weight"]), "reps": int(s["reps"]), "time_sec": None})
 
-            ex_id = add_exercise(conn, exercise_name_to_use)
-            add_workout_with_sets(conn, str(workout_date), ex_id, normalized)
+            ex_id = add_exercise(get_conn(), exercise_name_to_use)
+            add_workout_with_sets(get_conn(), str(workout_date), ex_id, normalized)
 
             st.success("Saved ✅")
 
+            # reset sets
             st.session_state.sets = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
 
+            # clear widget values for this ns
             for i in range(1, 50):
-                st.session_state.pop(f"w_{i}", None)
-                st.session_state.pop(f"r_{i}", None)
-                st.session_state.pop(f"t_{i}", None)
+                st.session_state.pop(f"{ns}_w_{i}", None)
+                st.session_state.pop(f"{ns}_r_{i}", None)
+                st.session_state.pop(f"{ns}_t_{i}", None)
 
             st.rerun()
 
         except Exception as e:
             st.error(f"Save failed: {e}")
 
-# ----------------- TAB: History (with delete) -----------------
-with tab_history:
-    st.subheader("History")
-
-    hist = get_history_df()
-    if hist.empty:
-        st.info("No workouts yet.")
-        st.stop()
-
-    tmp = hist.copy()
-    tmp["set_str"] = tmp.apply(
-        lambda row: f"{int(row['time_sec'])}s" if pd.notna(row["time_sec"]) and int(row["time_sec"]) > 0
-        else f"{int(row['weight'])}×{int(row['reps'])}",
-        axis=1
-    )
-
-    compact = (
-        tmp.sort_values(["workout_date", "workout_id", "set_no"])
-           .groupby(["workout_id", "workout_date", "exercise"], as_index=False)
-           .agg(sets=("set_str", lambda x: " | ".join(x)))
-           .sort_values(["workout_date", "workout_id"], ascending=[False, False])
-    )
-
-    # -------- Filters ----------
     c1, c2, c3 = st.columns([2, 2, 2])
     with c1:
         ex_list = ["All"] + sorted(compact["exercise"].unique().tolist())
