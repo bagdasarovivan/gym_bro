@@ -5,7 +5,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import date
 import time
-start_total = time.time()
 from sqlalchemy import create_engine, text
 
 # ---------- DEBUG MODE ----------
@@ -19,6 +18,8 @@ def dbg(msg: str):
     if DEBUG:
         st.caption(msg)
 # --------------------------------
+
+start_total = time.time()
 
 DB_PATH = "fitness.db"
 
@@ -38,13 +39,13 @@ EXERCISE_TYPE = {
     "Incline Dumbbell Press": "light",
     "Dumbbell Bench": "light",
     "Dumbbell Flyes": "light",
+    "Flat Dumbbell Flyes": "light",
     "Lunges": "light",
     "Leg Curl": "light",
     "Leg Extension": "light",
     "Push-Ups": "light",
     "Pull-Ups": "light",
     "Crunches": "light",
-    "Flat Dumbbell Flyes": "light",
     "Hyperextension": "light",
 
     # timed
@@ -106,13 +107,12 @@ EXERCISE_IMAGES = {
 
 # ----------------- DB helpers -----------------
 @st.cache_resource
-def get_conn():
+def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
-
 
 def init_db(conn: sqlite3.Connection):
     cur = conn.cursor()
@@ -152,37 +152,34 @@ def init_db(conn: sqlite3.Connection):
 
     conn.commit()
 
-
 @st.cache_data(ttl=30)
 def get_exercises_df() -> pd.DataFrame:
     conn = get_conn()
     return pd.read_sql_query("SELECT id, name FROM exercises ORDER BY name", conn)
 
-
 @st.cache_data(ttl=30)
 def get_history_df() -> pd.DataFrame:
     conn = get_conn()
     return pd.read_sql_query("""
-    SELECT
-        w.id AS workout_id,
-        w.workout_date,
-        e.name AS exercise,
-        s.set_no,
-        s.weight,
-        s.reps,
-        s.time_sec
-    FROM workouts w
-    JOIN exercises e ON e.id = w.exercise_id
-    JOIN sets s ON s.workout_id = w.id
-    ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
+        SELECT
+            w.id AS workout_id,
+            w.workout_date,
+            e.name AS exercise,
+            s.set_no,
+            s.weight,
+            s.reps,
+            s.time_sec
+        FROM workouts w
+        JOIN exercises e ON e.id = w.exercise_id
+        JOIN sets s ON s.workout_id = w.id
+        ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
     """, conn)
 
-
 @st.cache_data(ttl=30)
-def get_last_workout_df(exercise_name: str):
+def get_last_workout_df(exercise_name: str) -> pd.DataFrame | None:
     conn = get_conn()
     df = pd.read_sql_query("""
-        SELECT 
+        SELECT
             w.id as workout_id,
             w.workout_date,
             s.weight,
@@ -202,8 +199,27 @@ def get_last_workout_df(exercise_name: str):
     last_workout_id = int(df.iloc[0]["workout_id"])
     return df[df["workout_id"] == last_workout_id].copy()
 
+@st.cache_data(ttl=60)
+def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
+    conn = get_conn()
+    ym_start = f"{year:04d}-{month:02d}-01"
+    last_day = calendar.monthrange(year, month)[1]
+    ym_end = f"{year:04d}-{month:02d}-{last_day:02d}"
 
-def add_exercise(conn, name: str) -> int:
+    return pd.read_sql_query("""
+        SELECT workout_date, COUNT(*) AS entries
+        FROM workouts
+        WHERE workout_date BETWEEN ? AND ?
+        GROUP BY workout_date
+    """, conn, params=(ym_start, ym_end))
+
+def clear_all_caches():
+    get_exercises_df.clear()
+    get_history_df.clear()
+    get_last_workout_df.clear()
+    get_month_daily_df.clear()
+
+def add_exercise(conn: sqlite3.Connection, name: str) -> int:
     name = name.strip()
     if not name:
         raise ValueError("Empty exercise name")
@@ -212,16 +228,13 @@ def add_exercise(conn, name: str) -> int:
     cur.execute("INSERT OR IGNORE INTO exercises(name) VALUES(?)", (name,))
     conn.commit()
 
-    # invalidate caches affected by exercises list
     get_exercises_df.clear()
 
     row = cur.execute("SELECT id FROM exercises WHERE name = ?", (name,)).fetchone()
     return int(row[0])
 
-
-def add_workout_with_sets(conn, workout_date: str, exercise_id: int, sets_rows: list[dict]):
+def add_workout_with_sets(conn: sqlite3.Connection, workout_date: str, exercise_id: int, sets_rows: list[dict]):
     cur = conn.cursor()
-
     cur.execute(
         "INSERT INTO workouts(workout_date, exercise_id) VALUES(?, ?)",
         (workout_date, exercise_id)
@@ -242,88 +255,66 @@ def add_workout_with_sets(conn, workout_date: str, exercise_id: int, sets_rows: 
 
     conn.commit()
 
-    # invalidate caches affected by workouts/sets
     get_history_df.clear()
     get_last_workout_df.clear()
+    get_month_daily_df.clear()
 
-
-def delete_workout(conn, workout_id: int):
+def delete_workout(conn: sqlite3.Connection, workout_id: int):
     cur = conn.cursor()
     cur.execute("DELETE FROM sets WHERE workout_id = ?", (workout_id,))
     cur.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
     conn.commit()
 
-    # invalidate caches affected by workouts/sets
     get_history_df.clear()
     get_last_workout_df.clear()
+    get_month_daily_df.clear()
 
+# ----------------- Page config -----------------
+st.set_page_config(
+    page_title="Gym BRO",
+    page_icon="images/gymbro_icon.png",
+    layout="centered"
+)
 
+# ----------------- Supabase test (optional) -----------------
+@st.cache_resource
+def test_supabase(db_url: str) -> bool:
+    engine = create_engine(db_url, pool_pre_ping=True)
+    with engine.connect() as c:
+        c.execute(text("SELECT 1"))
+    return True
+
+if "DB_URL" in st.secrets:
+    try:
+        test_supabase(st.secrets["DB_URL"])
+        st.success("✅ Supabase DB connected")
+    except Exception as e:
+        st.error(f"❌ Supabase DB connect failed: {e}")
+
+# ----------------- Styles -----------------
 st.markdown("""
 <style>
-
-/* Мобильная адаптация */
 @media (max-width: 768px) {
-
-    h1 {
-        font-size: 32px !important;
-    }
-
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 40px !important;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        font-size: 16px !important;
-        padding: 12px 0px !important;
-    }
-
-    img {
-        max-width: 100% !important;
-        height: auto !important;
-    }
-
-    .block-container {
-        padding-top: 1rem !important;
-        padding-bottom: 2rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-    }
+    h1 { font-size: 32px !important; }
+    .stTabs [data-baseweb="tab-list"] { gap: 40px !important; }
+    .stTabs [data-baseweb="tab"] { font-size: 16px !important; padding: 12px 0px !important; }
+    img { max-width: 100% !important; height: auto !important; }
+    .block-container { padding: 1rem 1rem 2rem 1rem !important; }
 }
-
-</style>
-""", unsafe_allow_html=True)
-
-
-st.markdown("""
-<style>
-
-/* Центрируем табы и задаём расстояние */
 .stTabs [data-baseweb="tab-list"] {
     width: 100%;
     justify-content: center;
     gap: 100px;
 }
-
-/* Делаем вкладки крупнее */
 .stTabs [data-baseweb="tab"] {
-    font-size: 24px;          /* было меньше */
-    padding: 20px 0px;        /* увеличиваем высоту */
+    font-size: 24px;
+    padding: 20px 0px;
     font-weight: 500;
 }
-
-/* Активная вкладка чуть жирнее */
-.stTabs [aria-selected="true"] {
-    font-weight: 700;
-}
-
-/* Немного мягкого hover-эффекта */
-.stTabs [data-baseweb="tab"]:hover {
-    opacity: 0.8;
-}
-
+.stTabs [aria-selected="true"] { font-weight: 700; }
+.stTabs [data-baseweb="tab"]:hover { opacity: 0.8; }
 </style>
 """, unsafe_allow_html=True)
-
 
 col1, col2 = st.columns([1, 6])
 with col1:
@@ -331,21 +322,24 @@ with col1:
 with col2:
     st.markdown("<h1 style='margin:0'>Gym BRO</h1>", unsafe_allow_html=True)
 
+# ----------------- Init DB + seed -----------------
 conn = get_conn()
 init_db(conn)
 
-# seed exercises
 for name in [
     "Bench Press","Squat","Deadlift","Biceps","Triceps","Overhead Press",
     "Dumbbell Flyes","Romanian Deadlift","Incline Dumbbell Press","Lat Pulldown",
     "Seated Cable Row","Dumbbell Bench","Push-Ups","Leg Press","Lunges","Leg Curl",
-    "Leg Extension","Barbell Row","Plank","Pull-Ups","Crunches"
+    "Leg Extension","Barbell Row","Plank","Pull-Ups","Crunches","Flat Dumbbell Flyes",
+    "Hyperextension"
 ]:
     add_exercise(conn, name)
 
 tab_add, tab_history, tab_progress = st.tabs(["➕ Add workout", "📜 History", "📈 Progress"])
 
-# ----------------- TAB: Add workout -----------------
+# ============================
+# TAB: Add workout
+# ============================
 with tab_add:
     st.subheader("Add workout")
 
@@ -355,7 +349,7 @@ with tab_add:
         st.warning("No exercises found.")
         st.stop()
 
-    date_col, spacer = st.columns([1, 4])
+    date_col, _ = st.columns([1, 4])
     with date_col:
         workout_date = st.date_input(
             "📅 Date",
@@ -368,19 +362,13 @@ with tab_add:
     q = st.text_input("Search exercise", "")
 
     filtered = [x for x in ex_names if q.lower() in x.lower()] if q else ex_names
-
     fav = [x for x in FAVORITE_EXERCISES if x in filtered]
     rest = [x for x in filtered if x not in fav]
     ex_options = fav + rest
 
-    if not ex_options:
-        st.info("No exercises match your search.")
-        st.stop()
-
     cA, cB = st.columns([3, 1])
-
     with cA:
-        exercise_name_to_use = st.selectbox(
+        exercise_name = st.selectbox(
             "Exercise",
             ex_options,
             index=None,
@@ -388,18 +376,17 @@ with tab_add:
             key="add_exercise_select"
         )
 
-    ns = f"{workout_date}_{exercise_name_to_use}".replace(" ", "_")
-
-    if not exercise_name_to_use:
+    if not exercise_name:
         st.stop()
 
+    ns = f"{workout_date}_{exercise_name}".replace(" ", "_")
+
     with cB:
-        img_path = EXERCISE_IMAGES.get(exercise_name_to_use)
+        img_path = EXERCISE_IMAGES.get(exercise_name)
         if img_path:
             st.image(img_path, width=120)
 
-    # --- Last workout (does NOT control whether Sets render) ---
-    last_df = get_last_workout_df(exercise_name_to_use)
+    last_df = get_last_workout_df(exercise_name)
     if last_df is not None:
         st.markdown("#### Last workout")
         date_str = str(last_df.iloc[0]["workout_date"])
@@ -411,17 +398,15 @@ with tab_add:
                 sets_str.append(f"{int(row['weight'])}×{int(row['reps'])}")
         st.caption(f"{date_str} — " + " | ".join(sets_str))
 
-    # ---- profile for current exercise ----
-    ex_type = EXERCISE_TYPE.get(exercise_name_to_use, "light")
+    ex_type = EXERCISE_TYPE.get(exercise_name, "light")
     profile = TYPE_PROFILES[ex_type]
 
     st.markdown("### Sets")
 
-    # init sets for current mode
+    # sets state
     if "sets" not in st.session_state:
         st.session_state.sets = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
 
-    # if user switches exercise type, re-init correctly
     if profile["mode"] == "time":
         if not st.session_state.sets or "time_sec" not in st.session_state.sets[0]:
             st.session_state.sets = [{"time_sec": 0}]
@@ -429,16 +414,13 @@ with tab_add:
         if not st.session_state.sets or "weight" not in st.session_state.sets[0]:
             st.session_state.sets = [{"weight": 0, "reps": 0}]
 
-    sets_rows = []
+    sets_rows: list[dict] = []
 
     with st.form(f"sets_form_{ns}", clear_on_submit=False):
-
         for idx, s in enumerate(st.session_state.sets, start=1):
-
             if profile["mode"] == "time":
                 key_t = f"{ns}_t_{idx}"
                 current_t = st.session_state.get(key_t, s.get("time_sec", 0))
-
                 t = st.selectbox(
                     f"Set {idx} — Time (sec)",
                     profile["time_options"],
@@ -446,13 +428,10 @@ with tab_add:
                     key=key_t
                 )
                 sets_rows.append({"time_sec": int(t)})
-
             else:
                 c1, c2 = st.columns(2)
-
                 key_w = f"{ns}_w_{idx}"
                 key_r = f"{ns}_r_{idx}"
-
                 current_w = st.session_state.get(key_w, s.get("weight", 0))
                 current_r = st.session_state.get(key_r, s.get("reps", 0))
 
@@ -463,7 +442,6 @@ with tab_add:
                         index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
                         key=key_w
                     )
-
                 with c2:
                     r = st.selectbox(
                         f"Set {idx} — Reps",
@@ -471,7 +449,6 @@ with tab_add:
                         index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
                         key=key_r
                     )
-
                 sets_rows.append({"weight": int(w), "reps": int(r)})
 
         apply = st.form_submit_button("✅ Apply sets")
@@ -480,9 +457,7 @@ with tab_add:
         st.session_state.sets = sets_rows
         st.rerun()
 
-    # --- Add / Remove set buttons ---
     c_plus, c_minus = st.columns([1, 1])
-
     with c_plus:
         if st.button("➕ Add set", key=f"{ns}_add_set_btn"):
             if profile["mode"] == "time":
@@ -497,16 +472,23 @@ with tab_add:
         if st.button("➖ Remove last", key=f"{ns}_remove_set_btn"):
             if len(st.session_state.sets) > 1:
                 st.session_state.sets.pop()
-                i = len(st.session_state.sets) + 1  # index of removed set (1-based)
+                i = len(st.session_state.sets) + 1
                 st.session_state.pop(f"{ns}_w_{i}", None)
                 st.session_state.pop(f"{ns}_r_{i}", None)
                 st.session_state.pop(f"{ns}_t_{i}", None)
                 st.rerun()
 
-    # ----------------- Save -----------------
+    st.markdown("### Session summary")
+    if profile["mode"] == "time":
+        filled = [s for s in st.session_state.sets if s.get("time_sec", 0) > 0]
+        st.info(f"Sets: {len(filled)} | Total time: {sum(s['time_sec'] for s in filled)} sec")
+    else:
+        filled = [s for s in st.session_state.sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
+        st.info(f"Sets: {len(filled)} | Total volume: {sum(s['weight'] * s['reps'] for s in filled)} kg")
+
     if st.button("💾 Save workout", key=f"{ns}_save_workout"):
         try:
-            # IMPORTANT: always save what is currently selected on screen
+            # Always save what's currently selected on screen
             st.session_state.sets = sets_rows
 
             if profile["mode"] == "time":
@@ -525,15 +507,12 @@ with tab_add:
                 else:
                     normalized.append({"weight": int(s["weight"]), "reps": int(s["reps"]), "time_sec": None})
 
-            ex_id = add_exercise(get_conn(), exercise_name_to_use)
+            ex_id = add_exercise(get_conn(), exercise_name)
             add_workout_with_sets(get_conn(), str(workout_date), ex_id, normalized)
 
             st.success("Saved ✅")
 
-            # reset sets
             st.session_state.sets = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
-
-            # clear widget values for this ns
             for i in range(1, 50):
                 st.session_state.pop(f"{ns}_w_{i}", None)
                 st.session_state.pop(f"{ns}_r_{i}", None)
@@ -544,16 +523,41 @@ with tab_add:
         except Exception as e:
             st.error(f"Save failed: {e}")
 
+# ============================
+# TAB: History
+# ============================
+with tab_history:
+    st.subheader("History")
+
+    hist = get_history_df()
+    if hist.empty:
+        st.info("No workouts yet.")
+        st.stop()
+
+    tmp = hist.copy()
+    tmp["set_str"] = tmp.apply(
+        lambda row: f"{int(row['time_sec'])}s" if pd.notna(row["time_sec"]) and int(row["time_sec"]) > 0
+        else f"{int(row['weight'])}×{int(row['reps'])}",
+        axis=1
+    )
+
+    compact = (
+        tmp.sort_values(["workout_date", "workout_id", "set_no"])
+           .groupby(["workout_id", "workout_date", "exercise"], as_index=False)
+           .agg(sets=("set_str", lambda x: " | ".join(x)))
+           .sort_values(["workout_date", "workout_id"], ascending=[False, False])
+    )
+
     c1, c2, c3 = st.columns([2, 2, 2])
     with c1:
         ex_list = ["All"] + sorted(compact["exercise"].unique().tolist())
-        ex_filter = st.selectbox("Exercise", ex_list, index=0)
+        ex_filter = st.selectbox("Exercise", ex_list, index=0, key="hist_ex_filter")
     with c2:
         dmin = pd.to_datetime(compact["workout_date"]).min().date()
-        d_from = st.date_input("From", value=dmin)
+        d_from = st.date_input("From", value=dmin, key="hist_from")
     with c3:
         dmax = pd.to_datetime(compact["workout_date"]).max().date()
-        d_to = st.date_input("To", value=dmax)
+        d_to = st.date_input("To", value=dmax, key="hist_to")
 
     view = compact.copy()
     view["workout_date_dt"] = pd.to_datetime(view["workout_date"]).dt.date
@@ -565,38 +569,32 @@ with tab_add:
         st.info("No records for current filters.")
         st.stop()
 
-    # -------- Diary view (group by date) ----------
     for day, day_df in view.groupby("workout_date", sort=False):
         day_df = day_df.sort_values("workout_id", ascending=False)
-
         with st.expander(f"📅 {day}  ·  {len(day_df)} entries", expanded=True):
             for _, row in day_df.iterrows():
                 left, right = st.columns([5, 1])
-
                 with left:
                     st.markdown(f"**{row['exercise']}**")
                     st.caption(row["sets"])
-
                 with right:
-                    # safer delete with confirmation
                     pop = st.popover("🗑", use_container_width=True)
                     with pop:
                         st.write("Delete this entry?")
                         confirm = st.checkbox("Confirm", key=f"confirm_{row['workout_id']}")
                         if st.button("Delete", key=f"del_{row['workout_id']}", disabled=not confirm):
-                            delete_workout(conn, int(row["workout_id"]))
+                            delete_workout(get_conn(), int(row["workout_id"]))
                             st.success("Deleted ✅")
                             st.rerun()
 
-   
-
-
-# ----------------- TAB: Progress -----------------
+# ============================
+# TAB: Progress
+# ============================
 with tab_progress:
     st.subheader("Progress")
 
     t_hist = time.time()
-    hist = get_history_df()   # твоя кэшированная версия
+    hist = get_history_df()
     dbg(f"history load: {time.time() - t_hist:.3f} sec")
 
     if hist.empty:
@@ -605,7 +603,6 @@ with tab_progress:
 
     st.markdown("## 🗓 Training calendar")
 
-    # --- month navigation state ---
     if "cal_month" not in st.session_state or "cal_year" not in st.session_state:
         st.session_state.cal_year = date.today().year
         st.session_state.cal_month = date.today().month
@@ -635,19 +632,8 @@ with tab_progress:
             st.session_state.cal_month, st.session_state.cal_year = m, y
             st.rerun()
 
-    # --- fetch training days for this month ---
-    ym_start = f"{st.session_state.cal_year:04d}-{st.session_state.cal_month:02d}-01"
-    last_day = calendar.monthrange(st.session_state.cal_year, st.session_state.cal_month)[1]
-    ym_end = f"{st.session_state.cal_year:04d}-{st.session_state.cal_month:02d}-{last_day:02d}"
-
     t_cal = time.time()
-
-    month_daily = pd.read_sql_query("""
-    SELECT workout_date, COUNT(*) AS entries
-    FROM workouts
-    WHERE workout_date BETWEEN ? AND ?
-    GROUP BY workout_date
-    """, conn, params=(ym_start, ym_end))
+    month_daily = get_month_daily_df(st.session_state.cal_year, st.session_state.cal_month)
 
     entries_map = {}
     if not month_daily.empty:
@@ -655,9 +641,8 @@ with tab_progress:
             d = pd.to_datetime(r["workout_date"]).date().day
             entries_map[int(d)] = int(r["entries"])
 
-    # --- render calendar grid as HTML ---
-    cal = calendar.Calendar(firstweekday=0)  # Monday
-    weeks = cal.monthdayscalendar(st.session_state.cal_year, st.session_state.cal_month)
+    calobj = calendar.Calendar(firstweekday=0)
+    weeks = calobj.monthdayscalendar(st.session_state.cal_year, st.session_state.cal_month)
 
     css = """
     <style>
@@ -693,69 +678,56 @@ with tab_progress:
     st.markdown("".join(html), unsafe_allow_html=True)
     dbg(f"calendar: {time.time() - t_cal:.3f} sec")
 
-    # --- drilldown by selected day (simple) ---
     trained_dates = sorted(
         [date(st.session_state.cal_year, st.session_state.cal_month, d) for d in entries_map.keys()],
         reverse=True
     )
+
     if trained_dates:
         pick_day = st.selectbox("Show workouts for day", trained_dates, key="cal_pick_day")
-        # твой existing day drilldown (как раньше)
+
+        conn_local = get_conn()
+        day_rows = pd.read_sql_query("""
+            SELECT
+                w.id AS workout_id,
+                w.workout_date,
+                e.name AS exercise,
+                s.set_no,
+                s.weight,
+                s.reps,
+                s.time_sec
+            FROM workouts w
+            JOIN exercises e ON e.id = w.exercise_id
+            JOIN sets s ON s.workout_id = w.id
+            WHERE w.workout_date = ?
+            ORDER BY w.id DESC, s.set_no ASC
+        """, conn_local, params=(str(pick_day),))
+
+        if not day_rows.empty:
+            day_rows["set_str"] = day_rows.apply(
+                lambda row: f"{int(row['time_sec'])}s" if pd.notna(row["time_sec"]) and int(row["time_sec"]) > 0
+                else f"{int(row['weight'])}×{int(row['reps'])}",
+                axis=1
+            )
+            day_compact = (
+                day_rows.groupby(["workout_id", "workout_date", "exercise"], as_index=False)
+                        .agg(sets=("set_str", lambda x: " | ".join(x)))
+                        .sort_values("workout_id", ascending=False)
+            )
+
+            st.markdown("### Workouts for selected day")
+            for _, rr in day_compact.iterrows():
+                st.markdown(f"**{rr['exercise']}**")
+                st.caption(rr["sets"])
+        else:
+            st.info("No rows for this day (unexpected).")
     else:
         st.info("No workouts in this month yet.")
 
-    # =======================
-    # 🗓 Training calendar
-    # =======================
-
-        trained_days = cal[cal["entries"] > 0]["day"].tolist()[::-1]
-        if trained_days:
-            pick = st.selectbox("Show workouts for day", trained_days)
-
-            day_rows = pd.read_sql_query("""
-                SELECT
-                    w.id AS workout_id,
-                    w.workout_date,
-                    e.name AS exercise,
-                    s.set_no,
-                    s.weight,
-                    s.reps,
-                    s.time_sec
-                FROM workouts w
-                JOIN exercises e ON e.id = w.exercise_id
-                JOIN sets s ON s.workout_id = w.id
-                WHERE w.workout_date = ?
-                ORDER BY w.id DESC, s.set_no ASC
-            """, conn, params=(str(pick),))
-
-            if day_rows.empty:
-                st.info("No rows for this day (unexpected).")
-            else:
-                day_rows["set_str"] = day_rows.apply(
-                    lambda row: f"{int(row['time_sec'])}s" if pd.notna(row["time_sec"]) and int(row["time_sec"]) > 0
-                    else f"{int(row['weight'])}×{int(row['reps'])}",
-                    axis=1
-                )
-
-                day_compact = (
-                    day_rows.groupby(["workout_id", "workout_date", "exercise"], as_index=False)
-                            .agg(sets=("set_str", lambda x: " | ".join(x)))
-                            .sort_values("workout_id", ascending=False)
-                )
-
-                for _, rr in day_compact.iterrows():
-                    st.markdown(f"**{rr['exercise']}**")
-                    st.caption(rr["sets"])
-        else:
-            st.info("No training days in the selected range yet.")
-
     st.divider()
 
-    # =======================
-    # 📈 Exercise progress (1RM)
-    # =======================
+    # ---- Exercise progress (1RM) ----
     non_timed = hist[(hist["time_sec"].isna()) | (hist["time_sec"].fillna(0) == 0)].copy()
-
     if non_timed.empty:
         st.info("Only timed exercises found (no weight/reps to calculate 1RM).")
         st.stop()
@@ -763,22 +735,17 @@ with tab_progress:
     exercises = sorted(non_timed["exercise"].unique().tolist())
     ex = st.selectbox("Exercise", exercises, key="progress_exercise_select")
 
-    df = non_timed[non_timed["exercise"] == ex].copy()
-    df = df[(df["weight"] > 0) & (df["reps"] > 0)]
-
+    df = non_timed[(non_timed["exercise"] == ex) & (non_timed["weight"] > 0) & (non_timed["reps"] > 0)].copy()
     if df.empty:
         st.info("No valid weight+reps sets for this exercise.")
         st.stop()
 
-    # --- metrics by set ---
     df["est_1rm"] = df["weight"] * (1 + (df["reps"] / 30.0))
 
-    # --- daily series ---
     t_plot = time.time()
     best_1rm_by_day = df.groupby("workout_date", as_index=False)["est_1rm"].max()
     top_w_by_day = df.groupby("workout_date", as_index=False)["weight"].max()
 
-    # --- plot: two axes ---
     fig, ax1 = plt.subplots()
     ax1.plot(best_1rm_by_day["workout_date"], best_1rm_by_day["est_1rm"])
     ax1.set_title(f"{ex} — Estimated 1RM & Top weight by day")
@@ -793,7 +760,6 @@ with tab_progress:
     st.pyplot(fig)
     dbg(f"plot: {time.time() - t_plot:.3f} sec")
 
-    # --- single metric ---
     st.metric("🏆 Best estimated 1RM", f"{float(df['est_1rm'].max()):.1f}")
 
 dbg(f"Render: {time.time() - start_total:.3f} sec")
