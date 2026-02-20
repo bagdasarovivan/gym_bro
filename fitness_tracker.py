@@ -593,24 +593,32 @@ with tab_add:
         st.session_state[sets_key] = [{"time_sec": 0}] if mode == "time" else [{"weight": 0, "reps": 0}]
 
     # Controls: add/remove set
-    c_spacer1, c_add, c_remove, c_spacer2 = st.columns([3, 1, 1, 3])
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
 
-    with c_add:
-        if st.button("➕ Add set", key=f"{ns}_add_set"):
-            st.session_state[sets_key].append(
-                {"time_sec": 0} if mode == "time" else {"weight": 0, "reps": 0}
-            )
-            st.rerun()
+    c1, c2 = st.columns([1, 1], gap="small")
 
-    with c_remove:
-        if st.button(
+    with c1:
+        add_clicked = st.button(
+            "➕ Add set",
+            key=f"{ns}_add_set",
+            use_container_width=True
+        )
+
+    with c2:
+        remove_clicked = st.button(
             "➖ Remove set",
             key=f"{ns}_remove_set",
             disabled=len(st.session_state[sets_key]) <= 1,
-        ):
-            st.session_state[sets_key] = st.session_state[sets_key][:-1]
-            st.rerun()
+            use_container_width=True
+        )
 
+    if add_clicked:
+        st.session_state[sets_key].append(
+            {"time_sec": 0} if mode == "time" else {"weight": 0, "reps": 0}
+        )
+
+    if remove_clicked and len(st.session_state[sets_key]) > 1:
+        st.session_state[sets_key] = st.session_state[sets_key][:-1]
     # ---- Sets form ----
     sets_rows: list[dict] = []
     with st.form(f"sets_form_{ns}", clear_on_submit=False):
