@@ -667,23 +667,6 @@ with tab_add:
     current_sets = read_sets_from_widgets(ns, len(st.session_state[sets_key]), mode)
     st.session_state[sets_key] = current_sets  # keep state consistent
 
-    if mode == "time":
-        filled = [s for s in current_sets if s.get("time_sec", 0) > 0]
-        total_t = sum(s["time_sec"] for s in filled) if filled else 0
-        st.info(f"Sets: {len(filled)} | Total time: {total_t} sec")
-        chips = "".join(
-            [f'<span class="set-chip"><strong>{i+1}</strong> · {s["time_sec"]}s</span>' for i, s in enumerate(filled)]
-        )
-    else:
-        filled = [s for s in current_sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
-        vol = sum(s["weight"] * s["reps"] for s in filled) if filled else 0
-        st.info(f"Sets: {len(filled)} | Total volume: {vol} kg")
-        chips = "".join(
-            [f'<span class="set-chip"><strong>{i+1}</strong> · {s["weight"]}×{s["reps"]}</span>' for i, s in enumerate(filled)]
-        )
-
-    st.markdown(f'<div class="sets-wrap">{chips}</div>', unsafe_allow_html=True)
-
     # ---- Save workout ----
     if st.button("💾 Save workout", key=f"{ns}_save_btn"):
         try:
