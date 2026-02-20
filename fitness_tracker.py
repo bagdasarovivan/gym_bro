@@ -518,7 +518,6 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
       const status = document.getElementById("{key}_status");
       btn.onclick = async () => {{
         try {{
-          await navigator.clipboard.writeText(`{safe}`);
           status.textContent = "Copied ✅";
           setTimeout(() => status.textContent = "", 1200);
         }} catch (e) {{
