@@ -45,6 +45,7 @@ EXERCISE_TYPE = {
     "Pull-Ups": "light",
     "Crunches": "light",
     "Flat Dumbbell Flyes": "light",
+    "Hyperextension": "light",
 
     # timed
     "Plank": "timed",
@@ -100,6 +101,7 @@ EXERCISE_IMAGES = {
     "Plank": "images/plank.png",
     "Crunches": "images/crunches.png",
     "Flat Dumbbell Flyes": "images/flat_dumbbell_flyes.png",
+    "Hyperextension": "images/hyperextension.png",
 }
 
 # ----------------- DB helpers -----------------
@@ -386,6 +388,8 @@ with tab_add:
             key="add_exercise_select"
         )
 
+    ns = f"{workout_date}_{exercise_name_to_use}".replace(" ", "_")
+
     if not exercise_name_to_use:
         st.stop()
 
@@ -427,48 +431,56 @@ with tab_add:
 
     sets_rows = []
 
-    for idx, s in enumerate(st.session_state.sets, start=1):
-        if profile["mode"] == "time":
-            key_t = f"t_{idx}"
-            current_t = st.session_state.get(key_t, s.get("time_sec", 0))
+    with st.form(f"sets_form_{ns}", clear_on_submit=False):
 
-            t = st.selectbox(
-                f"Set {idx} — Time (sec)",
-                profile["time_options"],
-                index=profile["time_options"].index(current_t) if current_t in profile["time_options"] else 0,
-                key=key_t
-            )
-            sets_rows.append({"time_sec": int(t)})
+        for idx, s in enumerate(st.session_state.sets, start=1):
 
-        else:
-            c1, c2 = st.columns(2)
+            if profile["mode"] == "time":
+                key_t = f"{ns}_t_{idx}"
+                current_t = st.session_state.get(key_t, s.get("time_sec", 0))
 
-            key_w = f"w_{idx}"
-            key_r = f"r_{idx}"
-
-            current_w = st.session_state.get(key_w, s.get("weight", 0))
-            current_r = st.session_state.get(key_r, s.get("reps", 0))
-
-            with c1:
-                w = st.selectbox(
-                    f"Set {idx} — Weight (kg)",
-                    profile["weight_options"],
-                    index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
-                    key=key_w
+                t = st.selectbox(
+                    f"Set {idx} — Time (sec)",
+                    profile["time_options"],
+                    index=profile["time_options"].index(current_t) if current_t in profile["time_options"] else 0,
+                    key=key_t
                 )
-            with c2:
-                r = st.selectbox(
-                    f"Set {idx} — Reps",
-                    profile["reps_options"],
-                    index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
-                    key=key_r
-                )
+                sets_rows.append({"time_sec": int(t)})
 
-            sets_rows.append({"weight": int(w), "reps": int(r)})
+            else:
+                c1, c2 = st.columns(2)
 
-    st.session_state.sets = sets_rows
+                key_w = f"{ns}_w_{idx}"
+                key_r = f"{ns}_r_{idx}"
 
-    # --- Add / Remove set buttons ---
+                current_w = st.session_state.get(key_w, s.get("weight", 0))
+                current_r = st.session_state.get(key_r, s.get("reps", 0))
+
+                with c1:
+                    w = st.selectbox(
+                        f"Set {idx} — Weight (kg)",
+                        profile["weight_options"],
+                        index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
+                        key=key_w
+                    )
+
+                with c2:
+                    r = st.selectbox(
+                        f"Set {idx} — Reps",
+                        profile["reps_options"],
+                        index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
+                        key=key_r
+                    )
+
+                sets_rows.append({"weight": int(w), "reps": int(r)})
+
+        apply = st.form_submit_button("✅ Apply sets")
+
+    if apply:
+        st.session_state.sets = sets_rows
+        st.rerun()
+
+    # --- Add / Remove set buttons --- (снаружи формы)
     c_plus, c_minus = st.columns([1, 1])
 
     with c_plus:
@@ -486,26 +498,11 @@ with tab_add:
             if len(st.session_state.sets) > 1:
                 st.session_state.sets.pop()
                 i = len(st.session_state.sets) + 1
-                st.session_state.pop(f"w_{i}", None)
-                st.session_state.pop(f"r_{i}", None)
-                st.session_state.pop(f"t_{i}", None)
+                st.session_state.pop(f"{ns}_w_{i}", None)
+                st.session_state.pop(f"{ns}_r_{i}", None)
+                st.session_state.pop(f"{ns}_t_{i}", None)
                 st.rerun()
 
-    # ----------------- Session summary -----------------
-    st.markdown("### Session summary")
-
-    if profile["mode"] == "time":
-        filled = [s for s in st.session_state.sets if s.get("time_sec", 0) > 0]
-        total_sets = len(filled)
-        total_time = sum(s["time_sec"] for s in filled)
-        st.info(f"Sets: {total_sets} | Total time: {total_time} sec")
-    else:
-        filled = [s for s in st.session_state.sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
-        total_sets = len(filled)
-        total_volume = sum(s["weight"] * s["reps"] for s in filled)
-        st.info(f"Sets: {total_sets} | Total volume: {total_volume} kg")
-
-    # ----------------- Save -----------------
     if st.button("💾 Save workout"):
         try:
             if profile["mode"] == "time":
