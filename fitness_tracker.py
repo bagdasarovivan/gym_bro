@@ -502,33 +502,6 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
     </script>
     """
     components.html(html, height=60)
-    
-    # Fix small JS typo safely by rendering correct script below
-    html = f"""
-    <div style="margin: 8px 0;">
-      <button id="{key}" style="
-        padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2);
-        background: rgba(255,255,255,0.08); color: white; cursor: pointer; font-size: 14px;">
-        {label}
-      </button>
-      <span id="{key}_status" style="margin-left:10px; opacity:.8; font-size: 13px;"></span>
-    </div>
-    <script>
-      const btn = document.getElementById("{key}");
-      const status = document.getElementById("{key}_status");
-      btn.onclick = async () => {{
-        try {{
-          status.textContent = "Copied ✅";
-          setTimeout(() => status.textContent = "", 1200);
-        }} catch (e) {{
-          status.textContent = "Copy failed (browser blocked)";
-          setTimeout(() => status.textContent = "", 1800);
-        }}
-      }};
-    </script>
-    """
-    components.html(html, height=60)
-
 
 # =========================
 # HEADER
