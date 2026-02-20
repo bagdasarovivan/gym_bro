@@ -347,7 +347,7 @@ tab_add, tab_history, tab_progress = st.tabs(["➕ Add workout", "📜 History",
 with tab_add:
     st.subheader("Add workout")
 
-    ex_df = get_exercises(conn)
+    ex_df = get_exercises_df()
     ex_names = ex_df["name"].tolist()
     if not ex_names:
         st.warning("No exercises found.")
@@ -545,7 +545,7 @@ with tab_add:
 with tab_history:
     st.subheader("History")
 
-    hist = get_history(conn)
+    hist = get_history_df()
     if hist.empty:
         st.info("No workouts yet.")
         st.stop()
