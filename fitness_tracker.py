@@ -796,12 +796,24 @@ with tab_history:
                         data = get_workout_for_edit(conn, workout_id)
 
                         # тут нужно определить mode + profile для ЭТОЙ записи
-                        ex_name = str(data["exercise_name"])
+                        ex_name = str(
+                            data.get("exercise_name")
+                            or data.get("exercise")
+                            or data.get("name")
+                            or str(r["exercise"])   # fallback из текущей строки day_df
+                        )
+                        if not ex_name or ex_name == "None":
+                            st.error(f"Edit failed: can't detect exercise name. Keys: {list(data.keys())}")
+                            st.stop()
                         ex_type = EXERCISE_TYPE.get(ex_name, "light")
                         profile = TYPE_PROFILES[ex_type]
                         mode = profile["mode"]  # "time" или "weight_reps"
 
                         # ---------- sets editor START ----------
+
+                        if "sets" not in data:
+                            st.error(f"Edit failed: data has no 'sets'. Keys: {list(data.keys())}")
+                            st.stop()
                         current_sets = data["sets"].to_dict("records")
 
                         if mode == "time":
