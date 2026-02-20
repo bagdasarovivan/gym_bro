@@ -471,8 +471,9 @@ def get_workout_for_edit(conn: sqlite3.Connection, workout_id: int) -> dict:
 # COPY TO CLIPBOARD (JS)
 # =========================
 def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "copy_btn"):
-    # Надёжно превращаем текст в JS-строку (экранирует кавычки/переводы строк/слэши)
     js_text = json.dumps(text, ensure_ascii=False)
+    js_key = json.dumps(key, ensure_ascii=False)
+    js_status = json.dumps(key + "_status", ensure_ascii=False)
 
     html = f"""
     <div style="margin: 8px 0;">
@@ -485,8 +486,8 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
     </div>
 
     <script>
-      const btn = document.getElementById({json.dumps(key)});
-      const status = document.getElementById({json.dumps(key + "_status")});
+      const btn = document.getElementById({js_key});
+      const status = document.getElementById({js_status});
 
       btn.onclick = async () => {{
         try {{
@@ -501,6 +502,7 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
     </script>
     """
     components.html(html, height=60)
+    
     # Fix small JS typo safely by rendering correct script below
     html = f"""
     <div style="margin: 8px 0;">
