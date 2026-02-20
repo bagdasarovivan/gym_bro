@@ -1,11 +1,13 @@
 import streamlit as st
 import calendar
-import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import date
 import time
+
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy import event
 
 # ---------- DEBUG MODE ----------
 DEBUG = False
@@ -51,7 +53,7 @@ EXERCISE_TYPE = {
     # timed
     "Plank": "timed",
 
-    # if you keep them as exercises
+    # keep as exercises
     "Biceps": "light",
     "Triceps": "light",
 }
@@ -105,35 +107,68 @@ EXERCISE_IMAGES = {
     "Hyperextension": "images/hyperextension.png",
 }
 
-# ----------------- DB helpers -----------------
+SEED_EXERCISES = [
+    "Bench Press","Squat","Deadlift","Biceps","Triceps","Overhead Press",
+    "Dumbbell Flyes","Romanian Deadlift","Incline Dumbbell Press","Lat Pulldown",
+    "Seated Cable Row","Dumbbell Bench","Push-Ups","Leg Press","Lunges","Leg Curl",
+    "Leg Extension","Barbell Row","Plank","Pull-Ups","Crunches","Flat Dumbbell Flyes",
+    "Hyperextension"
+]
+
+# =========================
+# DB / Engine helpers
+# =========================
 @st.cache_resource
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    return conn
+def get_engine() -> Engine:
+    """
+    If st.secrets["DB_URL"] exists -> PostgreSQL(Supabase).
+    Else -> local SQLite.
+    """
+    if "DB_URL" in st.secrets and str(st.secrets["DB_URL"]).strip():
+        db_url = str(st.secrets["DB_URL"]).strip()
+        engine = create_engine(db_url, pool_pre_ping=True, future=True)
+        return engine
 
-def init_db(conn: sqlite3.Connection):
-    cur = conn.cursor()
+    # SQLite fallback
+    sqlite_url = f"sqlite+pysqlite:///{DB_PATH}"
+    engine = create_engine(
+        sqlite_url,
+        connect_args={"check_same_thread": False},
+        pool_pre_ping=True,
+        future=True
+    )
 
-    cur.execute("""
+    # apply PRAGMA on each connection for SQLite
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, _connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            cursor.close()
+        except Exception:
+            pass
+
+    return engine
+
+
+def init_db(engine: Engine):
+    ddl_exercises = """
     CREATE TABLE IF NOT EXISTS exercises (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE
     )
-    """)
-
-    cur.execute("""
+    """
+    ddl_workouts = """
     CREATE TABLE IF NOT EXISTS workouts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workout_date TEXT NOT NULL,
         exercise_id INTEGER NOT NULL,
         FOREIGN KEY (exercise_id) REFERENCES exercises(id)
     )
-    """)
-
-    cur.execute("""
+    """
+    ddl_sets = """
     CREATE TABLE IF NOT EXISTS sets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workout_id INTEGER NOT NULL,
@@ -143,24 +178,108 @@ def init_db(conn: sqlite3.Connection):
         time_sec INTEGER,
         FOREIGN KEY (workout_id) REFERENCES workouts(id)
     )
-    """)
+    """
 
-    # indexes for speed
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id)")
+    # Postgres doesn't have AUTOINCREMENT keyword.
+    # We'll swap to SERIAL-like behavior only when needed.
+    if engine.dialect.name == "postgresql":
+        ddl_exercises = """
+        CREATE TABLE IF NOT EXISTS exercises (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE
+        )
+        """
+        ddl_workouts = """
+        CREATE TABLE IF NOT EXISTS workouts (
+            id BIGSERIAL PRIMARY KEY,
+            workout_date DATE NOT NULL,
+            exercise_id BIGINT NOT NULL REFERENCES exercises(id)
+        )
+        """
+        ddl_sets = """
+        CREATE TABLE IF NOT EXISTS sets (
+            id BIGSERIAL PRIMARY KEY,
+            workout_id BIGINT NOT NULL REFERENCES workouts(id),
+            set_no INTEGER NOT NULL,
+            weight DOUBLE PRECISION NOT NULL,
+            reps INTEGER NOT NULL,
+            time_sec INTEGER
+        )
+        """
 
-    conn.commit()
+    with engine.begin() as c:
+        c.execute(text(ddl_exercises))
+        c.execute(text(ddl_workouts))
+        c.execute(text(ddl_sets))
 
+        # indexes
+        if engine.dialect.name == "postgresql":
+            c.execute(text("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date)"))
+            c.execute(text("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id)"))
+            c.execute(text("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id)"))
+        else:
+            c.execute(text("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date)"))
+            c.execute(text("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id)"))
+            c.execute(text("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id)"))
+
+
+def seed_exercises_once(engine: Engine, names: list[str]):
+    """
+    Seeds exercises once (idempotent), and does it in ONE batch.
+    No per-item commits. No rerun spam.
+    """
+    # Quick exit if already seeded at least once.
+    # If user deletes some rows manually, we still add missing rows below.
+    if not names:
+        return
+
+    names = [n.strip() for n in names if n and n.strip()]
+    if not names:
+        return
+
+    if engine.dialect.name == "postgresql":
+        sql = text("INSERT INTO exercises(name) VALUES (:name) ON CONFLICT (name) DO NOTHING")
+    else:
+        sql = text("INSERT OR IGNORE INTO exercises(name) VALUES (:name)")
+
+    payload = [{"name": n} for n in names]
+
+    with engine.begin() as c:
+        c.execute(sql, payload)
+
+    # clear cached exercise list because seed could add missing
+    get_exercises_df.clear()
+
+
+# =========================
+# Cached reads
+# =========================
 @st.cache_data(ttl=30)
 def get_exercises_df() -> pd.DataFrame:
-    conn = get_conn()
-    return pd.read_sql_query("SELECT id, name FROM exercises ORDER BY name", conn)
+    engine = get_engine()
+    return pd.read_sql_query("SELECT id, name FROM exercises ORDER BY name", engine)
 
 @st.cache_data(ttl=30)
 def get_history_df() -> pd.DataFrame:
-    conn = get_conn()
-    return pd.read_sql_query("""
+    engine = get_engine()
+
+    if engine.dialect.name == "postgresql":
+        q = """
+        SELECT
+            w.id AS workout_id,
+            w.workout_date::text AS workout_date,
+            e.name AS exercise,
+            s.set_no,
+            s.weight,
+            s.reps,
+            s.time_sec
+        FROM workouts w
+        JOIN exercises e ON e.id = w.exercise_id
+        JOIN sets s ON s.workout_id = w.id
+        ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
+        """
+    else:
+        q = """
         SELECT
             w.id AS workout_id,
             w.workout_date,
@@ -173,12 +292,31 @@ def get_history_df() -> pd.DataFrame:
         JOIN exercises e ON e.id = w.exercise_id
         JOIN sets s ON s.workout_id = w.id
         ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
-    """, conn)
+        """
+
+    return pd.read_sql_query(q, engine)
 
 @st.cache_data(ttl=30)
 def get_last_workout_df(exercise_name: str) -> pd.DataFrame | None:
-    conn = get_conn()
-    df = pd.read_sql_query("""
+    engine = get_engine()
+
+    if engine.dialect.name == "postgresql":
+        q = """
+        SELECT
+            w.id as workout_id,
+            w.workout_date::text AS workout_date,
+            s.weight,
+            s.reps,
+            s.time_sec,
+            s.set_no
+        FROM workouts w
+        JOIN exercises e ON e.id = w.exercise_id
+        JOIN sets s ON s.workout_id = w.id
+        WHERE e.name = :exercise_name
+        ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
+        """
+    else:
+        q = """
         SELECT
             w.id as workout_id,
             w.workout_date,
@@ -189,10 +327,11 @@ def get_last_workout_df(exercise_name: str) -> pd.DataFrame | None:
         FROM workouts w
         JOIN exercises e ON e.id = w.exercise_id
         JOIN sets s ON s.workout_id = w.id
-        WHERE e.name = ?
+        WHERE e.name = :exercise_name
         ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
-    """, conn, params=(exercise_name,))
+        """
 
+    df = pd.read_sql_query(text(q), engine, params={"exercise_name": exercise_name})
     if df.empty:
         return None
 
@@ -201,17 +340,27 @@ def get_last_workout_df(exercise_name: str) -> pd.DataFrame | None:
 
 @st.cache_data(ttl=60)
 def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
-    conn = get_conn()
+    engine = get_engine()
     ym_start = f"{year:04d}-{month:02d}-01"
     last_day = calendar.monthrange(year, month)[1]
     ym_end = f"{year:04d}-{month:02d}-{last_day:02d}"
 
-    return pd.read_sql_query("""
+    if engine.dialect.name == "postgresql":
+        q = """
+        SELECT workout_date::text AS workout_date, COUNT(*) AS entries
+        FROM workouts
+        WHERE workout_date BETWEEN :ym_start::date AND :ym_end::date
+        GROUP BY workout_date
+        """
+    else:
+        q = """
         SELECT workout_date, COUNT(*) AS entries
         FROM workouts
-        WHERE workout_date BETWEEN ? AND ?
+        WHERE workout_date BETWEEN :ym_start AND :ym_end
         GROUP BY workout_date
-    """, conn, params=(ym_start, ym_end))
+        """
+
+    return pd.read_sql_query(text(q), engine, params={"ym_start": ym_start, "ym_end": ym_end})
 
 def clear_all_caches():
     get_exercises_df.clear()
@@ -219,79 +368,95 @@ def clear_all_caches():
     get_last_workout_df.clear()
     get_month_daily_df.clear()
 
-def add_exercise(conn: sqlite3.Connection, name: str) -> int:
+# =========================
+# Writes
+# =========================
+def add_exercise(engine: Engine, name: str) -> int:
     name = name.strip()
     if not name:
         raise ValueError("Empty exercise name")
 
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO exercises(name) VALUES(?)", (name,))
-    conn.commit()
+    if engine.dialect.name == "postgresql":
+        ins = text("INSERT INTO exercises(name) VALUES (:name) ON CONFLICT (name) DO NOTHING")
+        sel = text("SELECT id FROM exercises WHERE name = :name")
+    else:
+        ins = text("INSERT OR IGNORE INTO exercises(name) VALUES (:name)")
+        sel = text("SELECT id FROM exercises WHERE name = :name")
+
+    with engine.begin() as c:
+        c.execute(ins, {"name": name})
+        row = c.execute(sel, {"name": name}).fetchone()
 
     get_exercises_df.clear()
-
-    row = cur.execute("SELECT id FROM exercises WHERE name = ?", (name,)).fetchone()
     return int(row[0])
 
-def add_workout_with_sets(conn: sqlite3.Connection, workout_date: str, exercise_id: int, sets_rows: list[dict]):
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO workouts(workout_date, exercise_id) VALUES(?, ?)",
-        (workout_date, exercise_id)
-    )
-    workout_id = cur.lastrowid
+def add_workout_with_sets(engine: Engine, workout_date_str: str, exercise_id: int, sets_rows: list[dict]):
+    if not sets_rows:
+        raise ValueError("No sets to insert")
 
-    for i, s in enumerate(sets_rows, start=1):
-        cur.execute("""
-            INSERT INTO sets(workout_id, set_no, weight, reps, time_sec)
-            VALUES(?, ?, ?, ?, ?)
-        """, (
-            workout_id,
-            i,
-            float(s.get("weight", 0)),
-            int(s.get("reps", 0)),
-            int(s.get("time_sec")) if s.get("time_sec") is not None else None
-        ))
+    if engine.dialect.name == "postgresql":
+        # workout_date is DATE in PG
+        ins_w = text("INSERT INTO workouts(workout_date, exercise_id) VALUES (:workout_date::date, :exercise_id) RETURNING id")
+    else:
+        ins_w = text("INSERT INTO workouts(workout_date, exercise_id) VALUES (:workout_date, :exercise_id)")
 
-    conn.commit()
+    ins_s = text("""
+        INSERT INTO sets(workout_id, set_no, weight, reps, time_sec)
+        VALUES(:workout_id, :set_no, :weight, :reps, :time_sec)
+    """)
+
+    with engine.begin() as c:
+        if engine.dialect.name == "postgresql":
+            workout_id = int(c.execute(ins_w, {"workout_date": workout_date_str, "exercise_id": exercise_id}).scalar_one())
+        else:
+            res = c.execute(ins_w, {"workout_date": workout_date_str, "exercise_id": exercise_id})
+            # SQLAlchemy gives lastrowid for sqlite inserts
+            workout_id = int(res.lastrowid)
+
+        payload = []
+        for i, s in enumerate(sets_rows, start=1):
+            payload.append({
+                "workout_id": workout_id,
+                "set_no": i,
+                "weight": float(s.get("weight", 0)),
+                "reps": int(s.get("reps", 0)),
+                "time_sec": int(s["time_sec"]) if s.get("time_sec") is not None else None
+            })
+
+        c.execute(ins_s, payload)
 
     get_history_df.clear()
     get_last_workout_df.clear()
     get_month_daily_df.clear()
 
-def delete_workout(conn: sqlite3.Connection, workout_id: int):
-    cur = conn.cursor()
-    cur.execute("DELETE FROM sets WHERE workout_id = ?", (workout_id,))
-    cur.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
-    conn.commit()
+def delete_workout(engine: Engine, workout_id: int):
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM sets WHERE workout_id = :wid"), {"wid": workout_id})
+        c.execute(text("DELETE FROM workouts WHERE id = :wid"), {"wid": workout_id})
 
     get_history_df.clear()
     get_last_workout_df.clear()
     get_month_daily_df.clear()
 
-# ----------------- Page config -----------------
+# =========================
+# Page config
+# =========================
 st.set_page_config(
     page_title="Gym BRO",
     page_icon="images/gymbro_icon.png",
     layout="centered"
 )
 
-# ----------------- Supabase test (optional) -----------------
-@st.cache_resource
-def test_supabase(db_url: str) -> bool:
-    engine = create_engine(db_url, pool_pre_ping=True)
-    with engine.connect() as c:
-        c.execute(text("SELECT 1"))
-    return True
+# =========================
+# Init DB + seed ONCE
+# =========================
+engine = get_engine()
+init_db(engine)
+seed_exercises_once(engine, SEED_EXERCISES)
 
-if "DB_URL" in st.secrets:
-    try:
-        test_supabase(st.secrets["DB_URL"])
-        st.success("✅ Supabase DB connected")
-    except Exception as e:
-        st.error(f"❌ Supabase DB connect failed: {e}")
-
-# ----------------- Styles -----------------
+# =========================
+# Styles
+# =========================
 st.markdown("""
 <style>
 @media (max-width: 768px) {
@@ -321,19 +486,6 @@ with col1:
     st.image("images/gymbro_logo.png", width=90)
 with col2:
     st.markdown("<h1 style='margin:0'>Gym BRO</h1>", unsafe_allow_html=True)
-
-# ----------------- Init DB + seed -----------------
-conn = get_conn()
-init_db(conn)
-
-for name in [
-    "Bench Press","Squat","Deadlift","Biceps","Triceps","Overhead Press",
-    "Dumbbell Flyes","Romanian Deadlift","Incline Dumbbell Press","Lat Pulldown",
-    "Seated Cable Row","Dumbbell Bench","Push-Ups","Leg Press","Lunges","Leg Curl",
-    "Leg Extension","Barbell Row","Plank","Pull-Ups","Crunches","Flat Dumbbell Flyes",
-    "Hyperextension"
-]:
-    add_exercise(conn, name)
 
 tab_add, tab_history, tab_progress = st.tabs(["➕ Add workout", "📜 History", "📈 Progress"])
 
@@ -380,6 +532,7 @@ with tab_add:
         st.stop()
 
     ns = f"{workout_date}_{exercise_name}".replace(" ", "_")
+    sets_key = f"sets_{ns}"
 
     with cB:
         img_path = EXERCISE_IMAGES.get(exercise_name)
@@ -403,21 +556,44 @@ with tab_add:
 
     st.markdown("### Sets")
 
-    # sets state
-    if "sets" not in st.session_state:
-        st.session_state.sets = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
+    # Initialize sets list per namespace
+    if sets_key not in st.session_state:
+        st.session_state[sets_key] = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
 
+    # Ensure mode consistency (if user switches exercise type)
     if profile["mode"] == "time":
-        if not st.session_state.sets or "time_sec" not in st.session_state.sets[0]:
-            st.session_state.sets = [{"time_sec": 0}]
+        if not st.session_state[sets_key] or "time_sec" not in st.session_state[sets_key][0]:
+            st.session_state[sets_key] = [{"time_sec": 0}]
     else:
-        if not st.session_state.sets or "weight" not in st.session_state.sets[0]:
-            st.session_state.sets = [{"weight": 0, "reps": 0}]
+        if not st.session_state[sets_key] or "weight" not in st.session_state[sets_key][0]:
+            st.session_state[sets_key] = [{"weight": 0, "reps": 0}]
 
+    # Buttons add/remove sets (outside form is fine)
+    c_plus, c_minus = st.columns([1, 1])
+    with c_plus:
+        if st.button("➕ Add set", key=f"{ns}_add_set_btn"):
+            if profile["mode"] == "time":
+                last_t = st.session_state[sets_key][-1].get("time_sec", 0) if st.session_state[sets_key] else 0
+                st.session_state[sets_key].append({"time_sec": int(last_t)})
+            else:
+                last_w = st.session_state[sets_key][-1].get("weight", 0) if st.session_state[sets_key] else 0
+                st.session_state[sets_key].append({"weight": int(last_w), "reps": 0})
+            st.rerun()
+
+    with c_minus:
+        if st.button("➖ Remove last", key=f"{ns}_remove_set_btn"):
+            if len(st.session_state[sets_key]) > 1:
+                st.session_state[sets_key].pop()
+                i = len(st.session_state[sets_key]) + 1
+                st.session_state.pop(f"{ns}_w_{i}", None)
+                st.session_state.pop(f"{ns}_r_{i}", None)
+                st.session_state.pop(f"{ns}_t_{i}", None)
+                st.rerun()
+
+    # FORM: now Save is INSIDE the form -> it will capture latest widget values
     sets_rows: list[dict] = []
-
     with st.form(f"sets_form_{ns}", clear_on_submit=False):
-        for idx, s in enumerate(st.session_state.sets, start=1):
+        for idx, s in enumerate(st.session_state[sets_key], start=1):
             if profile["mode"] == "time":
                 key_t = f"{ns}_t_{idx}"
                 current_t = st.session_state.get(key_t, s.get("time_sec", 0))
@@ -451,50 +627,32 @@ with tab_add:
                     )
                 sets_rows.append({"weight": int(w), "reps": int(r)})
 
-        apply = st.form_submit_button("✅ Apply sets")
+        b1, b2 = st.columns([1, 1])
+        with b1:
+            apply = st.form_submit_button("✅ Apply sets")
+        with b2:
+            save = st.form_submit_button("💾 Save workout")
 
-    if apply:
-        st.session_state.sets = sets_rows
-        st.rerun()
+    # Apply updates local state (so summary reflects it)
+    if apply or save:
+        st.session_state[sets_key] = sets_rows
 
-    c_plus, c_minus = st.columns([1, 1])
-    with c_plus:
-        if st.button("➕ Add set", key=f"{ns}_add_set_btn"):
-            if profile["mode"] == "time":
-                last_t = st.session_state.sets[-1].get("time_sec", 0) if st.session_state.sets else 0
-                st.session_state.sets.append({"time_sec": int(last_t)})
-            else:
-                last_w = st.session_state.sets[-1].get("weight", 0) if st.session_state.sets else 0
-                st.session_state.sets.append({"weight": int(last_w), "reps": 0})
-            st.rerun()
-
-    with c_minus:
-        if st.button("➖ Remove last", key=f"{ns}_remove_set_btn"):
-            if len(st.session_state.sets) > 1:
-                st.session_state.sets.pop()
-                i = len(st.session_state.sets) + 1
-                st.session_state.pop(f"{ns}_w_{i}", None)
-                st.session_state.pop(f"{ns}_r_{i}", None)
-                st.session_state.pop(f"{ns}_t_{i}", None)
-                st.rerun()
-
+    # Summary
     st.markdown("### Session summary")
     if profile["mode"] == "time":
-        filled = [s for s in st.session_state.sets if s.get("time_sec", 0) > 0]
+        filled = [s for s in st.session_state[sets_key] if s.get("time_sec", 0) > 0]
         st.info(f"Sets: {len(filled)} | Total time: {sum(s['time_sec'] for s in filled)} sec")
     else:
-        filled = [s for s in st.session_state.sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
+        filled = [s for s in st.session_state[sets_key] if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
         st.info(f"Sets: {len(filled)} | Total volume: {sum(s['weight'] * s['reps'] for s in filled)} kg")
 
-    if st.button("💾 Save workout", key=f"{ns}_save_workout"):
+    # Save logic (NOW uses the form values reliably)
+    if save:
         try:
-            # Always save what's currently selected on screen
-            st.session_state.sets = sets_rows
-
             if profile["mode"] == "time":
-                cleaned = [s for s in st.session_state.sets if s.get("time_sec", 0) > 0]
+                cleaned = [s for s in st.session_state[sets_key] if s.get("time_sec", 0) > 0]
             else:
-                cleaned = [s for s in st.session_state.sets if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
+                cleaned = [s for s in st.session_state[sets_key] if s.get("weight", 0) > 0 and s.get("reps", 0) > 0]
 
             if not cleaned:
                 st.error("Add at least one filled set.")
@@ -507,12 +665,13 @@ with tab_add:
                 else:
                     normalized.append({"weight": int(s["weight"]), "reps": int(s["reps"]), "time_sec": None})
 
-            ex_id = add_exercise(get_conn(), exercise_name)
-            add_workout_with_sets(get_conn(), str(workout_date), ex_id, normalized)
+            ex_id = add_exercise(engine, exercise_name)
+            add_workout_with_sets(engine, str(workout_date), ex_id, normalized)
 
             st.success("Saved ✅")
 
-            st.session_state.sets = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
+            # reset sets for this exercise/date namespace
+            st.session_state[sets_key] = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
             for i in range(1, 50):
                 st.session_state.pop(f"{ns}_w_{i}", None)
                 st.session_state.pop(f"{ns}_r_{i}", None)
@@ -535,6 +694,7 @@ with tab_history:
         st.stop()
 
     tmp = hist.copy()
+    # vectorized-ish (still row-wise but ok for now)
     tmp["set_str"] = tmp.apply(
         lambda row: f"{int(row['time_sec'])}s" if pd.notna(row["time_sec"]) and int(row["time_sec"]) > 0
         else f"{int(row['weight'])}×{int(row['reps'])}",
@@ -583,7 +743,7 @@ with tab_history:
                         st.write("Delete this entry?")
                         confirm = st.checkbox("Confirm", key=f"confirm_{row['workout_id']}")
                         if st.button("Delete", key=f"del_{row['workout_id']}", disabled=not confirm):
-                            delete_workout(get_conn(), int(row["workout_id"]))
+                            delete_workout(engine, int(row["workout_id"]))
                             st.success("Deleted ✅")
                             st.rerun()
 
@@ -686,8 +846,25 @@ with tab_progress:
     if trained_dates:
         pick_day = st.selectbox("Show workouts for day", trained_dates, key="cal_pick_day")
 
-        conn_local = get_conn()
-        day_rows = pd.read_sql_query("""
+        # fetch day rows (dialect-safe)
+        if engine.dialect.name == "postgresql":
+            q = """
+            SELECT
+                w.id AS workout_id,
+                w.workout_date::text AS workout_date,
+                e.name AS exercise,
+                s.set_no,
+                s.weight,
+                s.reps,
+                s.time_sec
+            FROM workouts w
+            JOIN exercises e ON e.id = w.exercise_id
+            JOIN sets s ON s.workout_id = w.id
+            WHERE w.workout_date = :d::date
+            ORDER BY w.id DESC, s.set_no ASC
+            """
+        else:
+            q = """
             SELECT
                 w.id AS workout_id,
                 w.workout_date,
@@ -699,9 +876,11 @@ with tab_progress:
             FROM workouts w
             JOIN exercises e ON e.id = w.exercise_id
             JOIN sets s ON s.workout_id = w.id
-            WHERE w.workout_date = ?
+            WHERE w.workout_date = :d
             ORDER BY w.id DESC, s.set_no ASC
-        """, conn_local, params=(str(pick_day),))
+            """
+
+        day_rows = pd.read_sql_query(text(q), engine, params={"d": str(pick_day)})
 
         if not day_rows.empty:
             day_rows["set_str"] = day_rows.apply(
@@ -758,8 +937,9 @@ with tab_progress:
     ax2.set_ylabel("Top weight (kg)")
 
     st.pyplot(fig)
-    dbg(f"plot: {time.time() - t_plot:.3f} sec")
+    plt.close(fig)
 
+    dbg(f"plot: {time.time() - t_plot:.3f} sec")
     st.metric("🏆 Best estimated 1RM", f"{float(df['est_1rm'].max()):.1f}")
 
 dbg(f"Render: {time.time() - start_total:.3f} sec")
