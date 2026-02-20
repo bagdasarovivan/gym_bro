@@ -6,6 +6,19 @@ import matplotlib.pyplot as plt
 from datetime import date
 import time
 start_total = time.time()
+from sqlalchemy import create_engine, text
+
+# ---------- DEBUG MODE ----------
+DEBUG = False
+try:
+    DEBUG = bool(st.secrets.get("DEBUG", False))
+except Exception:
+    DEBUG = False
+
+def dbg(msg: str):
+    if DEBUG:
+        st.caption(msg)
+# --------------------------------
 
 DB_PATH = "fitness.db"
 
@@ -219,11 +232,16 @@ st.set_page_config(
 )
 
 # --- Supabase connection test (temporary) ---
+@st.cache_resource
+def test_supabase(db_url: str):
+    engine = create_engine(db_url, pool_pre_ping=True)
+    with engine.connect() as c:
+        c.execute(text("SELECT 1"))
+    return True
+
 if "DB_URL" in st.secrets:
     try:
-        engine = create_engine(st.secrets["DB_URL"])
-        with engine.connect() as c:
-            c.execute(text("SELECT 1"))
+        test_supabase(st.secrets["DB_URL"])
         st.success("✅ Supabase DB connected")
     except Exception as e:
         st.error(f"❌ Supabase DB connect failed: {e}")
@@ -592,7 +610,7 @@ with tab_progress:
 
     t_hist = time.time()
     hist = get_history_df()   # твоя кэшированная версия
-    st.write(f"history load: {time.time() - t_hist:.3f} sec")
+    dbg(f"history load: {time.time() - t_hist:.3f} sec")
 
     if hist.empty:
         st.info("Add workouts to see progress.")
@@ -686,7 +704,7 @@ with tab_progress:
 
     html.append("</tbody></table></div>")
     st.markdown("".join(html), unsafe_allow_html=True)
-    st.write(f"calendar: {time.time() - t_cal:.3f} sec")
+    dbg(f"calendar: {time.time() - t_cal:.3f} sec")
 
     # --- drilldown by selected day (simple) ---
     trained_dates = sorted(
@@ -786,9 +804,9 @@ with tab_progress:
     ax2.set_ylabel("Top weight (kg)")
 
     st.pyplot(fig)
-    st.write(f"plot: {time.time() - t_plot:.3f} sec")
+    dbg(f"plot: {time.time() - t_plot:.3f} sec")
 
     # --- single metric ---
     st.metric("🏆 Best estimated 1RM", f"{float(df['est_1rm'].max()):.1f}")
 
-st.write("Render time:", round(time.time() - start_total, 3), "sec")
+dbg(f"Render: {time.time() - start_total:.3f} sec")
