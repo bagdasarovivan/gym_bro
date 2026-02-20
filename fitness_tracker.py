@@ -700,12 +700,14 @@ with tab_add:
         except Exception as e:
             st.error(f"Save failed: {e}")
 
-# =========================
-# TAB: History
-# =========================
+            # =========================
+            # TAB: History
+            # =========================
+
 with tab_history:
     st.subheader("History")
 
+    # --- Filters ---
     ex_df = get_exercises_df()
     ex_list = ["All"] + ex_df["name"].tolist()
     c1, c2, c3 = st.columns([2, 2, 2])
@@ -736,32 +738,60 @@ with tab_history:
 
     st.markdown("---")
 
+    # --- Day groups (custom accordion + copy button) ---
     for day, day_df in view.groupby("workout_date", sort=False):
         day_df = day_df.sort_values("workout_id", ascending=False)
 
-        day_text = "\n".join([f"{rr['workout_date']} — {rr['exercise']}: {rr['sets']}" for _, rr in day_df.iterrows()])
+        # Text for copying ONLY this day
+        day_text = "\n".join(
+            [f"{rr['workout_date']} — {rr['exercise']}: {rr['sets']}" for _, rr in day_df.iterrows()]
+        )
 
-        h1, h2 = st.columns([8, 2])
-        with h1:
-            st.markdown(f"#### 📅 {day} · {len(day_df)} entries")
-        with h2:
-            copy_to_clipboard_button(day_text, key=f"copy_day_{str(day)}", label="📋 Copy")
+        # Safe keys
+        day_id = re.sub(r"[^0-9A-Za-z_]+", "_", str(day))
+        open_key = f"open_day_{day_id}"
+        toggle_key = f"toggle_day_{day_id}"
+        copy_key = f"copy_day_{day_id}"
 
-        with st.expander("Show", expanded=False):
+        if open_key not in st.session_state:
+            st.session_state[open_key] = False
+
+        is_open = bool(st.session_state[open_key])
+        arrow = "▼" if is_open else "▶"
+
+        # Header row: left is "accordion button", right is copy button
+        left_col, right_col = st.columns([10, 2], vertical_alignment="center")
+
+        with left_col:
+            if st.button(
+                f"{arrow} 📅 {day} · {len(day_df)} entries",
+                key=toggle_key,
+                use_container_width=True,
+            ):
+                st.session_state[open_key] = not st.session_state[open_key]
+                st.rerun()
+
+        with right_col:
+            copy_to_clipboard_button(day_text, key=copy_key, label="📋 Copy")
+
+        # Expanded content
+        if st.session_state[open_key]:
             for _, r in day_df.iterrows():
                 workout_id = int(r["workout_id"])
 
-                left, mid, right = st.columns([6, 2, 2])
+                l, m, rr = st.columns([6, 2, 2], vertical_alignment="center")
 
-                with left:
+                with l:
                     st.markdown(f"**{r['exercise']}**")
-                    chips = "".join([f'<span class="set-chip">{s.strip()}</span>' for s in str(r["sets"]).split("|")])
+                    chips = "".join(
+                        [f'<span class="set-chip">{s.strip()}</span>' for s in str(r["sets"]).split("|")]
+                    )
                     st.markdown(f'<div class="sets-wrap">{chips}</div>', unsafe_allow_html=True)
 
-                with mid:
+                with m:
                     pop = st.popover("✏️ Edit", use_container_width=True)
                     with pop:
-                        st.info("Edit UI is not implemented here yet (only Delete).")
+                        st.info("Edit UI пока не подключён (можно добавить позже).")
                         data = get_workout_for_edit(conn, workout_id)
                         st.write(
                             {
@@ -771,7 +801,7 @@ with tab_history:
                             }
                         )
 
-                with right:
+                with rr:
                     pop = st.popover("🗑 Delete", use_container_width=True)
                     with pop:
                         st.write("Delete this entry?")
@@ -781,9 +811,11 @@ with tab_history:
                             st.success("Deleted ✅")
                             st.rerun()
 
-# =========================
-# TAB: Progress
-# =========================
+            st.markdown("---")
+
+            # =========================
+            # TAB: Progress
+            # =========================
 with tab_progress:
     st.subheader("Progress")
 
