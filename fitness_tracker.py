@@ -716,9 +716,13 @@ with tab_history:
         day_df = day_df.sort_values("workout_id", ascending=False)
 
         # Text for copying ONLY this day
-        day_text = "\n".join(
-            [f"{rr['workout_date']} — {rr['exercise']}: {rr['sets']}" for _, rr in day_df.iterrows()]
-        )
+        # -------- Формирование текста для копирования --------
+        lines = [f"📅 {day} · {len(day_df)} exercises"]
+        for _, rr in day_df.iterrows():
+            sets = ", ".join([s.strip() for s in str(rr["sets"]).split("|")])
+            lines.append(f"{rr['exercise']}: {sets}")
+        day_text = "\n".join(lines)
+# ------------------------------------------------------
 
         # Safe keys
         day_id = re.sub(r"[^0-9A-Za-z_]+", "_", str(day))
