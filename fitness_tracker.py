@@ -4,8 +4,8 @@ import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import date
-from sqlalchemy import create_engine, text
-
+import time
+start_total = time.time()
 
 DB_PATH = "fitness.db"
 
@@ -90,8 +90,13 @@ EXERCISE_IMAGES = {
 }
 
 # ----------------- DB helpers -----------------
+@st.cache_resource
 def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
 
 def init_db(conn: sqlite3.Connection):
     cur = conn.cursor()
@@ -585,11 +590,13 @@ with tab_history:
 with tab_progress:
     st.subheader("Progress")
 
-    hist = get_history(conn)
+    t_hist = time.time()
+    hist = get_history_df()   # твоя кэшированная версия
+    st.write(f"history load: {time.time() - t_hist:.3f} sec")
+
     if hist.empty:
         st.info("Add workouts to see progress.")
         st.stop()
-
 
     st.markdown("## 🗓 Training calendar")
 
@@ -627,6 +634,8 @@ with tab_progress:
     ym_start = f"{st.session_state.cal_year:04d}-{st.session_state.cal_month:02d}-01"
     last_day = calendar.monthrange(st.session_state.cal_year, st.session_state.cal_month)[1]
     ym_end = f"{st.session_state.cal_year:04d}-{st.session_state.cal_month:02d}-{last_day:02d}"
+
+    t_cal = time.time()
 
     month_daily = pd.read_sql_query("""
     SELECT workout_date, COUNT(*) AS entries
@@ -677,6 +686,7 @@ with tab_progress:
 
     html.append("</tbody></table></div>")
     st.markdown("".join(html), unsafe_allow_html=True)
+    st.write(f"calendar: {time.time() - t_cal:.3f} sec")
 
     # --- drilldown by selected day (simple) ---
     trained_dates = sorted(
@@ -759,6 +769,7 @@ with tab_progress:
     df["est_1rm"] = df["weight"] * (1 + (df["reps"] / 30.0))
 
     # --- daily series ---
+    t_plot = time.time()
     best_1rm_by_day = df.groupby("workout_date", as_index=False)["est_1rm"].max()
     top_w_by_day = df.groupby("workout_date", as_index=False)["weight"].max()
 
@@ -775,6 +786,9 @@ with tab_progress:
     ax2.set_ylabel("Top weight (kg)")
 
     st.pyplot(fig)
+    st.write(f"plot: {time.time() - t_plot:.3f} sec")
 
     # --- single metric ---
     st.metric("🏆 Best estimated 1RM", f"{float(df['est_1rm'].max()):.1f}")
+
+st.write("Render time:", round(time.time() - start_total, 3), "sec")
