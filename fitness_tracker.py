@@ -8,6 +8,7 @@ import time
 import os
 import json
 import hashlib
+import re
 from pathlib import Path
 import streamlit.components.v1 as components
 
@@ -552,51 +553,89 @@ tab_add, tab_history, tab_progress = st.tabs(["➕ Add workout", "📜 History",
 # ============================
 # TAB: Add workout
 # ============================
+with tab_add:
+    st.subheader("Add workout")
+
+    workout_date = st.date_input(
+        "📅 Date",
+        value=date.today(),
+        min_value=date(2020, 1, 1),
+        max_value=date.today(),
+        key="workout_date"
+    )
+
+    ex_df = get_exercises_df()
+    ex_names = ex_df["name"].tolist()
+
+    q = st.text_input("Search exercise", "", key="search_ex")
+    filtered = [x for x in ex_names if q.lower() in x.lower()] if q else ex_names
+    fav = [x for x in FAVORITE_EXERCISES if x in filtered]
+    rest = [x for x in filtered if x not in fav]
+    ex_options = fav + rest
+
+    exercise_name = st.selectbox(
+        "Exercise",
+        ["— Select exercise —"] + ex_options,
+        index=0,
+        key="add_exercise_select",
+    )
+    if exercise_name == "— Select exercise —":
+        st.stop()
+
+    ns = re.sub(r"[^a-zA-Z0-9_]+", "_", f"{workout_date}_{exercise_name}".replace(" ", "_"))
+    sets_key = f"sets_{ns}"
+
+    ex_type = EXERCISE_TYPE.get(exercise_name, "light")
+    profile = TYPE_PROFILES[ex_type]
+
+    if sets_key not in st.session_state:
+        st.session_state[sets_key] = [{"time_sec": 0}] if profile["mode"] == "time" else [{"weight": 0, "reps": 0}]
+
 # ---------- Sets form ----------
-sets_rows: list[dict] = []
+    sets_rows: list[dict] = []
 
-with st.form(f"sets_form_{ns}", clear_on_submit=False):
-    for idx, s in enumerate(st.session_state[sets_key], start=1):
+    with st.form(f"sets_form_{ns}", clear_on_submit=False):
+        for idx, s in enumerate(st.session_state[sets_key], start=1):
 
-        if profile["mode"] == "time":
-            key_t = f"{ns}_t_{idx}"
-            current_t = int(st.session_state.get(key_t, s.get("time_sec", 0) or 0))
+            if profile["mode"] == "time":
+                key_t = f"{ns}_t_{idx}"
+                current_t = int(st.session_state.get(key_t, s.get("time_sec", 0) or 0))
 
-            t = st.selectbox(
-                f"Set {idx} — Time (sec)",
-                profile["time_options"],
-                index=profile["time_options"].index(current_t) if current_t in profile["time_options"] else 0,
-                key=key_t
-            )
-            sets_rows.append({"time_sec": int(t)})
-
-        else:
-            c1, c2 = st.columns(2)
-
-            key_w = f"{ns}_w_{idx}"
-            key_r = f"{ns}_r_{idx}"
-
-            current_w = int(st.session_state.get(key_w, s.get("weight", 0) or 0))
-            current_r = int(st.session_state.get(key_r, s.get("reps", 0) or 0))
-
-            with c1:
-                w = st.selectbox(
-                    f"Set {idx} — Weight (kg)",
-                    profile["weight_options"],
-                    index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
-                    key=key_w
+                t = st.selectbox(
+                    f"Set {idx} — Time (sec)",
+                    profile["time_options"],
+                    index=profile["time_options"].index(current_t) if current_t in profile["time_options"] else 0,
+                    key=key_t
                 )
-            with c2:
-                r = st.selectbox(
-                    f"Set {idx} — Reps",
-                    profile["reps_options"],
-                    index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
-                    key=key_r
-                )
+                sets_rows.append({"time_sec": int(t)})
 
-            sets_rows.append({"weight": int(w), "reps": int(r)})
+            else:
+                c1, c2 = st.columns(2)
 
-    apply = st.form_submit_button("✅ Apply sets")
+                key_w = f"{ns}_w_{idx}"
+                key_r = f"{ns}_r_{idx}"
+
+                current_w = int(st.session_state.get(key_w, s.get("weight", 0) or 0))
+                current_r = int(st.session_state.get(key_r, s.get("reps", 0) or 0))
+
+                with c1:
+                    w = st.selectbox(
+                        f"Set {idx} — Weight (kg)",
+                        profile["weight_options"],
+                        index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
+                        key=key_w
+                    )
+                with c2:
+                    r = st.selectbox(
+                        f"Set {idx} — Reps",
+                        profile["reps_options"],
+                        index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
+                        key=key_r
+                    )
+
+                sets_rows.append({"weight": int(w), "reps": int(r)})
+
+        apply = st.form_submit_button("✅ Apply sets")
 
 # Apply updates (optional, for instant summary refresh)
 if apply:
