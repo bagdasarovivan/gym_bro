@@ -557,9 +557,11 @@ sets_rows: list[dict] = []
 
 with st.form(f"sets_form_{ns}", clear_on_submit=False):
     for idx, s in enumerate(st.session_state[sets_key], start=1):
+
         if profile["mode"] == "time":
             key_t = f"{ns}_t_{idx}"
-            current_t = st.session_state.get(key_t, s.get("time_sec", 0))
+            current_t = int(st.session_state.get(key_t, s.get("time_sec", 0) or 0))
+
             t = st.selectbox(
                 f"Set {idx} — Time (sec)",
                 profile["time_options"],
@@ -567,12 +569,15 @@ with st.form(f"sets_form_{ns}", clear_on_submit=False):
                 key=key_t
             )
             sets_rows.append({"time_sec": int(t)})
+
         else:
             c1, c2 = st.columns(2)
+
             key_w = f"{ns}_w_{idx}"
             key_r = f"{ns}_r_{idx}"
-            current_w = st.session_state.get(key_w, s.get("weight", 0))
-            current_r = st.session_state.get(key_r, s.get("reps", 0))
+
+            current_w = int(st.session_state.get(key_w, s.get("weight", 0) or 0))
+            current_r = int(st.session_state.get(key_r, s.get("reps", 0) or 0))
 
             with c1:
                 w = st.selectbox(
@@ -588,6 +593,7 @@ with st.form(f"sets_form_{ns}", clear_on_submit=False):
                     index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
                     key=key_r
                 )
+
             sets_rows.append({"weight": int(w), "reps": int(r)})
 
     apply = st.form_submit_button("✅ Apply sets")
