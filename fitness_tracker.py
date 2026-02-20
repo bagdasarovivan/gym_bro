@@ -578,8 +578,11 @@ with tab_add:
         ex_options,
         key="add_exercise_select"
     )
-    if exercise_name == "— Select exercise —":
-        st.stop()
+
+    img_path = EXERCISE_IMAGES.get(exercise_name)
+
+    if img_path and os.path.exists(img_path):
+        st.image(img_path, width=140)
 
     ns = re.sub(r"[^a-zA-Z0-9_]+", "_", f"{workout_date}_{exercise_name}".replace(" ", "_"))
     sets_key = f"sets_{ns}"
