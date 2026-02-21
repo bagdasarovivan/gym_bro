@@ -30,7 +30,11 @@ def dbg(msg: str):
 start_total = time.time()
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = str(BASE_DIR / "fitness.db")
+
+DATA_DIR = Path.home() / "gym_bro_data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = str(DATA_DIR / "fitness.db")
 
 ICON_PATH = str((BASE_DIR / "images" / "gymbro_icon.png").resolve())
 st.set_page_config(page_title="Gym BRO", page_icon=ICON_PATH, layout="centered")
