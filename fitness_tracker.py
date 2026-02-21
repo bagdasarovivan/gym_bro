@@ -3,7 +3,7 @@ import calendar
 import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import date
+from datetime import date, timedelta
 import time
 import json
 import hashlib
@@ -302,13 +302,13 @@ def seed_exercises_hashed(conn, names: list[str]):
 # =========================
 # CACHED READS
 # =========================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=600)
 def get_exercises_df() -> pd.DataFrame:
     conn = get_conn()
     return pd.read_sql_query("SELECT id, name FROM exercises ORDER BY name", conn)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=600)
 def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
     conn = get_conn()
     ym_start = f"{year:04d}-{month:02d}-01"
@@ -326,7 +326,7 @@ def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=300)
 def get_history_compact(exercise: str | None, d_from: str, d_to: str) -> pd.DataFrame:
     conn = get_conn()
 
@@ -360,7 +360,7 @@ def get_history_compact(exercise: str | None, d_from: str, d_to: str) -> pd.Data
     return pd.read_sql_query(q, conn, params=(d_from, d_to))
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=300)
 def get_exercise_sets_for_progress(exercise_name: str) -> pd.DataFrame:
     conn = get_conn()
     return pd.read_sql_query(
@@ -519,9 +519,13 @@ with col2:
 # =========================
 # INIT DB + SEED
 # =========================
-conn = get_conn()
-init_db(conn)
-seed_exercises_hashed(conn, SEED_EXERCISES)
+try:
+    conn = get_conn()
+    init_db(conn)
+    seed_exercises_hashed(conn, SEED_EXERCISES)
+except Exception as e:
+    st.error(f"DB connect failed: {e}")
+    st.stop()    
 
 tab_add, tab_history, tab_progress = st.tabs(["➕ Add workout", "📜 History", "📈 Progress"])
 
@@ -741,9 +745,10 @@ with tab_history:
 
     dmin = row[0]
     dmax = row[1]
+    default_from = max(dmin, dmax - timedelta(days=30))
 
     with c2:
-        d_from = st.date_input("From", value=dmin, min_value=dmin, max_value=dmax, key="hist_from")
+        d_from = st.date_input("From", value=default_from, min_value=dmin, max_value=dmax, key="hist_from")
     with c3:
         d_to = st.date_input("To", value=dmax, min_value=dmin, max_value=dmax, key="hist_to")
 
