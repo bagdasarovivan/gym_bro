@@ -229,7 +229,7 @@ def get_conn():
     if not db_url:
         raise RuntimeError("Нет DATABASE_URL в st.secrets (Supabase не подключён)")
     conn = psycopg2.connect(db_url)
-    conn.autocommit = False
+    conn.autocommit = True
     return conn
 
 def init_db(conn):
