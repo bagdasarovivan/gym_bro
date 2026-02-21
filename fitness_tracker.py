@@ -583,55 +583,94 @@ if sets_key not in st.session_state:
 # =========================
 # SETS FORM (single source of truth)
 # =========================
+# --- Render sets (NO st.form). Buttons will be below, like раньше ---
 sets_rows: list[dict] = []
 
-with st.form(f"sets_form_{ns}", clear_on_submit=False):
-    for idx, s in enumerate(st.session_state[sets_key], start=1):
-        if mode == "time":
-            key_t = f"{ns}_t_{idx}"
-            current_t = int(st.session_state.get(key_t, s.get("time_sec", 0) or 0))
+for idx, s in enumerate(st.session_state[sets_key], start=1):
+    if mode == "time":
+        key_t = f"{ns}_t_{idx}"
 
-            t = st.selectbox(
-                f"Set {idx} — Time (sec)",
-                profile["time_options"],
-                index=profile["time_options"].index(current_t) if current_t in profile["time_options"] else 0,
-                key=key_t,
+        # init default once (so selectbox has a value via session_state)
+        if key_t not in st.session_state:
+            st.session_state[key_t] = int(s.get("time_sec", 0) or 0)
+
+        t = st.selectbox(
+            f"Set {idx} — Time (sec)",
+            profile["time_options"],
+            key=key_t,
+        )
+        sets_rows.append({"time_sec": int(t)})
+
+    else:
+        c1, c2 = st.columns(2)
+        key_w = f"{ns}_w_{idx}"
+        key_r = f"{ns}_r_{idx}"
+
+        # init defaults once
+        if key_w not in st.session_state:
+            st.session_state[key_w] = int(s.get("weight", 0) or 0)
+        if key_r not in st.session_state:
+            st.session_state[key_r] = int(s.get("reps", 0) or 0)
+
+        with c1:
+            w = st.selectbox(
+                f"Set {idx} — Weight (kg)",
+                profile["weight_options"],
+                key=key_w,
             )
-            sets_rows.append({"time_sec": int(t)})
+        with c2:
+            r = st.selectbox(
+                f"Set {idx} — Reps",
+                profile["reps_options"],
+                key=key_r,
+            )
 
-        else:
-            c1, c2 = st.columns(2)
+        sets_rows.append({"weight": int(w), "reps": int(r)})
 
-            key_w = f"{ns}_w_{idx}"
-            key_r = f"{ns}_r_{idx}"
+# --- Buttons UNDER the widgets (как раньше) ---
+cA, cB, cC = st.columns(3)
 
-            current_w = int(st.session_state.get(key_w, s.get("weight", 0) or 0))
-            current_r = int(st.session_state.get(key_r, s.get("reps", 0) or 0))
+with cA:
+    apply_btn = st.button("✅ Apply sets", use_container_width=True)
 
-            with c1:
-                w = st.selectbox(
-                    f"Set {idx} — Weight (kg)",
-                    profile["weight_options"],
-                    index=profile["weight_options"].index(current_w) if current_w in profile["weight_options"] else 0,
-                    key=key_w,
-                )
-            with c2:
-                r = st.selectbox(
-                    f"Set {idx} — Reps",
-                    profile["reps_options"],
-                    index=profile["reps_options"].index(current_r) if current_r in profile["reps_options"] else 0,
-                    key=key_r,
-                )
+with cB:
+    add_btn = st.button("➕ Add set", use_container_width=True)
 
-            sets_rows.append({"weight": int(w), "reps": int(r)})
+with cC:
+    remove_btn = st.button("➖ Remove set", use_container_width=True)
 
-    cA, cB, cC = st.columns(3)
-    with cA:
-        apply_btn = st.form_submit_button("✅ Apply sets", use_container_width=True)
-    with cB:
-        add_btn = st.form_submit_button("➕ Add set", use_container_width=True)
-    with cC:
-        remove_btn = st.form_submit_button("➖ Remove set", use_container_width=True)
+if apply_btn:
+    st.session_state[sets_key] = sets_rows
+    st.rerun()
+
+if add_btn:
+    # фиксируем текущие значения
+    st.session_state[sets_key] = sets_rows
+
+    if mode == "time":
+        last_val = int(sets_rows[-1].get("time_sec", 0))
+        st.session_state[sets_key].append({"time_sec": last_val})
+        new_idx = len(st.session_state[sets_key])
+        st.session_state[f"{ns}_t_{new_idx}"] = last_val
+    else:
+        last_w = int(sets_rows[-1].get("weight", 0))
+        last_r = int(sets_rows[-1].get("reps", 0))
+        st.session_state[sets_key].append({"weight": last_w, "reps": last_r})
+        new_idx = len(st.session_state[sets_key])
+        st.session_state[f"{ns}_w_{new_idx}"] = last_w
+        st.session_state[f"{ns}_r_{new_idx}"] = last_r
+
+    st.rerun()
+
+if remove_btn:
+    st.session_state[sets_key] = sets_rows
+    if len(st.session_state[sets_key]) > 1:
+        last_idx = len(st.session_state[sets_key])
+        st.session_state[sets_key] = st.session_state[sets_key][:-1]
+        st.session_state.pop(f"{ns}_w_{last_idx}", None)
+        st.session_state.pop(f"{ns}_r_{last_idx}", None)
+        st.session_state.pop(f"{ns}_t_{last_idx}", None)
+    st.rerun()
 
 # =========================
 # FORM ACTIONS
