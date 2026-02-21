@@ -576,75 +576,79 @@ with tab_add:
     ns = f"add_{st.session_state.add_ns_by_ex[exercise_name]}"
     sets_key = f"sets_{ns}"
 
-    # ---- Sets form state init ----
+# -------------------------
+# SETS UI (Apply inside box, Add/Remove below)
+# -------------------------
+
+# init list state
 if sets_key not in st.session_state:
     st.session_state[sets_key] = [{"time_sec": 0}] if mode == "time" else [{"weight": 0, "reps": 0}]
 
-# =========================
-# SETS FORM (single source of truth)
-# =========================
-# --- Render sets (NO st.form). Buttons will be below, like раньше ---
 sets_rows: list[dict] = []
 
-for idx, s in enumerate(st.session_state[sets_key], start=1):
-    if mode == "time":
-        key_t = f"{ns}_t_{idx}"
+# "box" area: selects + Apply button inside
+with st.container():
+    for idx, s in enumerate(st.session_state[sets_key], start=1):
+        if mode == "time":
+            key_t = f"{ns}_t_{idx}"
 
-        # init default once (so selectbox has a value via session_state)
-        if key_t not in st.session_state:
-            st.session_state[key_t] = int(s.get("time_sec", 0) or 0)
+            # init widget state once
+            if key_t not in st.session_state:
+                st.session_state[key_t] = int(s.get("time_sec", 0) or 0)
 
-        t = st.selectbox(
-            f"Set {idx} — Time (sec)",
-            profile["time_options"],
-            key=key_t,
-        )
-        sets_rows.append({"time_sec": int(t)})
-
-    else:
-        c1, c2 = st.columns(2)
-        key_w = f"{ns}_w_{idx}"
-        key_r = f"{ns}_r_{idx}"
-
-        # init defaults once
-        if key_w not in st.session_state:
-            st.session_state[key_w] = int(s.get("weight", 0) or 0)
-        if key_r not in st.session_state:
-            st.session_state[key_r] = int(s.get("reps", 0) or 0)
-
-        with c1:
-            w = st.selectbox(
-                f"Set {idx} — Weight (kg)",
-                profile["weight_options"],
-                key=key_w,
+            t = st.selectbox(
+                f"Set {idx} — Time (sec)",
+                profile["time_options"],
+                key=key_t,
             )
-        with c2:
-            r = st.selectbox(
-                f"Set {idx} — Reps",
-                profile["reps_options"],
-                key=key_r,
-            )
+            sets_rows.append({"time_sec": int(t)})
 
-        sets_rows.append({"weight": int(w), "reps": int(r)})
+        else:
+            c1, c2 = st.columns(2)
+            key_w = f"{ns}_w_{idx}"
+            key_r = f"{ns}_r_{idx}"
 
-# --- Buttons UNDER the widgets (как раньше) ---
-cA, cB, cC = st.columns(3)
+            if key_w not in st.session_state:
+                st.session_state[key_w] = int(s.get("weight", 0) or 0)
+            if key_r not in st.session_state:
+                st.session_state[key_r] = int(s.get("reps", 0) or 0)
 
-with cA:
-    apply_btn = st.button("✅ Apply sets", use_container_width=True)
+            with c1:
+                w = st.selectbox(
+                    f"Set {idx} — Weight (kg)",
+                    profile["weight_options"],
+                    key=key_w,
+                )
+            with c2:
+                r = st.selectbox(
+                    f"Set {idx} — Reps",
+                    profile["reps_options"],
+                    key=key_r,
+                )
 
-with cB:
-    add_btn = st.button("➕ Add set", use_container_width=True)
+            sets_rows.append({"weight": int(w), "reps": int(r)})
 
-with cC:
-    remove_btn = st.button("➖ Remove set", use_container_width=True)
+    # Apply sets button INSIDE the box
+    apply_btn = st.button("✅ Apply sets", use_container_width=False)
 
+# Apply action: just sync sets_key with what is currently selected
 if apply_btn:
     st.session_state[sets_key] = sets_rows
     st.rerun()
 
+# buttons BELOW the box (как на твоём скрине)
+st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+c1, c2 = st.columns([1, 1], gap="small")
+
+add_btn = c1.button("➕ Add set", use_container_width=True)
+remove_btn = c2.button(
+    "➖ Remove set",
+    use_container_width=True,
+    disabled=len(st.session_state[sets_key]) <= 1,
+)
+
 if add_btn:
-    # фиксируем текущие значения
+    # фиксируем текущие значения (то, что реально в селектах)
     st.session_state[sets_key] = sets_rows
 
     if mode == "time":
