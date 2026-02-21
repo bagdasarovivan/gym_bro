@@ -34,10 +34,7 @@ start_total = time.time()
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATA_DIR = Path.home() / "gym_bro_data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-DB_PATH = str(DATA_DIR / "fitness.db")
+DB_PATH = str((BASE_DIR / "fitness.db").resolve())
 
 ICON_PATH = str((BASE_DIR / "images" / "gymbro_icon.png").resolve())
 st.set_page_config(page_title="Gym BRO", page_icon=ICON_PATH, layout="centered")
@@ -228,58 +225,51 @@ def read_sets_from_widgets(ns: str, sets_count: int, mode: str) -> list[dict]:
 # =========================
 @st.cache_resource
 def get_conn():
-    db_url = st.secrets.get("DATABASE_URL", None)
-
-    if db_url:
-        conn = psycopg2.connect(db_url)
-        conn.autocommit = False
-        return conn
-
-    # fallback: local SQLite
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
+    db_url = st.secrets.get("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("Нет DATABASE_URL в st.secrets (Supabase не подключён)")
+    conn = psycopg2.connect(db_url)
+    conn.autocommit = False
     return conn
 
-def init_db(conn: sqlite3.Connection):
-    cur = conn.cursor()
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS exercises (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE
-    )
-    """
-    )
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS workouts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        workout_date TEXT NOT NULL,
-        exercise_id INTEGER NOT NULL,
-        FOREIGN KEY (exercise_id) REFERENCES exercises(id)
-    )
-    """
-    )
-    # NOTE: weight/reps are NOT NULL to keep schema simple.
-    # For timed sets we store weight=0 reps=0 time_sec>0.
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS sets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        workout_id INTEGER NOT NULL,
-        set_no INTEGER NOT NULL,
-        weight REAL NOT NULL,
-        reps INTEGER NOT NULL,
-        time_sec INTEGER,
-        FOREIGN KEY (workout_id) REFERENCES workouts(id)
-    )
-    """
-    )
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id)")
+def init_db(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS exercises (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            );
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workouts (
+                id BIGSERIAL PRIMARY KEY,
+                workout_date DATE NOT NULL,
+                exercise_id BIGINT NOT NULL REFERENCES exercises(id) ON DELETE CASCADE
+            );
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sets (
+                id BIGSERIAL PRIMARY KEY,
+                workout_id BIGINT NOT NULL REFERENCES workouts(id) ON DELETE CASCADE,
+                set_no INT NOT NULL,
+                weight DOUBLE PRECISION NOT NULL,
+                reps INT NOT NULL,
+                time_sec INT
+            );
+            """
+        )
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);")
+
     conn.commit()
 
 
@@ -289,7 +279,7 @@ def _seed_hash(names: list[str]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def seed_exercises_hashed(conn: sqlite3.Connection, names: list[str]):
+def seed_exercises_hashed(conn, names: list[str]):
     """
     Seed only when the seed list changes (per session).
     """
@@ -300,13 +290,14 @@ def seed_exercises_hashed(conn: sqlite3.Connection, names: list[str]):
 
     clean = [(n.strip(),) for n in names if n and n.strip()]
     if clean:
-        cur = conn.cursor()
-        cur.executemany("INSERT OR IGNORE INTO exercises(name) VALUES(?)", clean)
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO exercises(name) VALUES(%s) ON CONFLICT (name) DO NOTHING",
+                clean,
+            )
         conn.commit()
-
-    st.session_state[key] = h
-    get_exercises_df.clear()
-
+        st.session_state[key] = h
+        get_exercises_df.clear()
 
 # =========================
 # CACHED READS
@@ -324,49 +315,45 @@ def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
     last_day = calendar.monthrange(year, month)[1]
     ym_end = f"{year:04d}-{month:02d}-{last_day:02d}"
     return pd.read_sql_query(
-        """
-        SELECT workout_date, COUNT(*) AS entries
-        FROM workouts
-        WHERE workout_date BETWEEN ? AND ?
-        GROUP BY workout_date
+    """
+    SELECT workout_date, COUNT(*) AS entries
+    FROM workouts
+    WHERE workout_date BETWEEN %s AND %s
+    GROUP BY workout_date
     """,
-        conn,
-        params=(ym_start, ym_end),
+    conn,
+    params=(ym_start, ym_end),
     )
 
 
 @st.cache_data(ttl=20)
 def get_history_compact(exercise: str | None, d_from: str, d_to: str) -> pd.DataFrame:
     conn = get_conn()
+
     base = """
         SELECT
-            t.workout_id,
-            t.workout_date,
-            t.exercise,
-            group_concat(t.set_str, ' | ') AS sets
-        FROM (
-            SELECT
-                w.id AS workout_id,
-                w.workout_date,
-                e.name AS exercise,
-                s.set_no,
+            w.id AS workout_id,
+            w.workout_date,
+            e.name AS exercise,
+            string_agg(
                 CASE
-                  WHEN s.time_sec IS NOT NULL AND s.time_sec > 0 THEN printf('%ds', s.time_sec)
-                  ELSE printf('%d×%d', CAST(s.weight AS INT), s.reps)
-                END AS set_str
-            FROM workouts w
-            JOIN exercises e ON e.id = w.exercise_id
-            JOIN sets s ON s.workout_id = w.id
-            WHERE w.workout_date BETWEEN ? AND ?
-            {ex_filter}
-            ORDER BY w.workout_date DESC, w.id DESC, s.set_no ASC
-        ) t
-        GROUP BY t.workout_id, t.workout_date, t.exercise
-        ORDER BY t.workout_date DESC, t.workout_id DESC
+                    WHEN s.time_sec IS NOT NULL AND s.time_sec > 0 THEN (s.time_sec::text || 's')
+                    ELSE (s.weight::int::text || '×' || s.reps::text)
+                END,
+                ' | '
+                ORDER BY s.set_no
+            ) AS sets
+        FROM workouts w
+        JOIN exercises e ON e.id = w.exercise_id
+        JOIN sets s ON s.workout_id = w.id
+        WHERE w.workout_date BETWEEN %s AND %s
+        {ex_filter}
+        GROUP BY w.id, w.workout_date, e.name
+        ORDER BY w.workout_date DESC, w.id DESC
     """
 
     if exercise and exercise != "All":
-        q = base.format(ex_filter="AND e.name = ?")
+        q = base.format(ex_filter="AND e.name = %s")
         return pd.read_sql_query(q, conn, params=(d_from, d_to, exercise))
 
     q = base.format(ex_filter="")
@@ -385,11 +372,11 @@ def get_exercise_sets_for_progress(exercise_name: str) -> pd.DataFrame:
         FROM workouts w
         JOIN exercises e ON e.id = w.exercise_id
         JOIN sets s ON s.workout_id = w.id
-        WHERE e.name = ?
-          AND (s.time_sec IS NULL OR s.time_sec = 0)
-          AND s.weight > 0 AND s.reps > 0
+        WHERE e.name = %s
+        AND (s.time_sec IS NULL OR s.time_sec = 0)
+        AND s.weight > 0 AND s.reps > 0
         ORDER BY w.workout_date ASC, w.id ASC, s.set_no ASC
-    """,
+        """,
         conn,
         params=(exercise_name,),
     )
@@ -405,81 +392,84 @@ def clear_cache_after_write():
 # =========================
 # WRITES
 # =========================
-def upsert_exercise(conn: sqlite3.Connection, name: str) -> int:
+def upsert_exercise(conn, name: str) -> int:
     name = name.strip()
     if not name:
         raise ValueError("Empty exercise name")
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO exercises(name) VALUES(?)", (name,))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO exercises(name) VALUES(%s) ON CONFLICT (name) DO NOTHING",
+            (name,),
+        )
+        cur.execute("SELECT id FROM exercises WHERE name = %s", (name,))
+        row = cur.fetchone()
+
     conn.commit()
-    row = cur.execute("SELECT id FROM exercises WHERE name = ?", (name,)).fetchone()
+
     if not row:
         raise RuntimeError("Failed to fetch exercise id")
     return int(row[0])
 
+def insert_workout(conn, workout_date: str, exercise_id: int, sets_rows: list[dict]):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workouts(workout_date, exercise_id) VALUES(%s, %s) RETURNING id",
+            (workout_date, exercise_id),
+        )
+        workout_id = int(cur.fetchone()[0])
 
-def insert_workout(conn: sqlite3.Connection, workout_date: str, exercise_id: int, sets_rows: list[dict]):
-    cur = conn.cursor()
-    cur.execute("INSERT INTO workouts(workout_date, exercise_id) VALUES(?, ?)", (workout_date, exercise_id))
-    workout_id = int(cur.lastrowid)
-
-    payload: list[tuple] = []
-    for i, s in enumerate(sets_rows, start=1):
-        payload.append(
-            (
-                workout_id,
-                i,
-                float(s.get("weight", 0)),
-                int(s.get("reps", 0)),
-                int(s["time_sec"]) if s.get("time_sec") is not None else None,
+        payload: list[tuple] = []
+        for i, s in enumerate(sets_rows, start=1):
+            payload.append(
+                (
+                    workout_id,
+                    i,
+                    float(s.get("weight", 0)),
+                    int(s.get("reps", 0)),
+                    int(s["time_sec"]) if s.get("time_sec") is not None else None,
+                )
             )
+
+        cur.executemany(
+            """
+            INSERT INTO sets(workout_id, set_no, weight, reps, time_sec)
+            VALUES(%s, %s, %s, %s, %s)
+            """,
+            payload,
         )
 
-    cur.executemany(
-        """
-        INSERT INTO sets(workout_id, set_no, weight, reps, time_sec)
-        VALUES(?, ?, ?, ?, ?)
-    """,
-        payload,
-    )
+    conn.commit()
+    clear_cache_after_write()
+
+def delete_workout(conn, workout_id: int):
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM workouts WHERE id = %s", (workout_id,))
     conn.commit()
     clear_cache_after_write()
 
 
-def delete_workout(conn: sqlite3.Connection, workout_id: int):
-    cur = conn.cursor()
-    cur.execute("DELETE FROM sets WHERE workout_id = ?", (workout_id,))
-    cur.execute("DELETE FROM workouts WHERE id = ?", (workout_id,))
-    conn.commit()
-    clear_cache_after_write()
+def get_workout_for_edit(conn, workout_id: int) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT w.id, w.workout_date, e.name
+            FROM workouts w
+            JOIN exercises e ON e.id = w.exercise_id
+            WHERE w.id = %s
+        """, (workout_id,))
+        row = cur.fetchone()
 
-
-def get_workout_for_edit(conn: sqlite3.Connection, workout_id: int) -> dict:
-    row = conn.execute(
-        """
-        SELECT w.id, w.workout_date, e.name as exercise
-        FROM workouts w
-        JOIN exercises e ON e.id = w.exercise_id
-        WHERE w.id = ?
-    """,
-        (workout_id,),
-    ).fetchone()
     if not row:
         raise ValueError("Workout not found")
 
-    sets = pd.read_sql_query(
-        """
+    sets = pd.read_sql_query("""
         SELECT set_no, weight, reps, time_sec
         FROM sets
-        WHERE workout_id = ?
+        WHERE workout_id = %s
         ORDER BY set_no ASC
-    """,
-        conn,
-        params=(workout_id,),
-    )
+    """, conn, params=(workout_id,))
 
     return {"workout_id": int(row[0]), "workout_date": str(row[1]), "exercise": str(row[2]), "sets": sets}
-
 
 # =========================
 # COPY TO CLIPBOARD (JS)
@@ -741,13 +731,16 @@ with tab_history:
     with c1:
         ex_filter = st.selectbox("Exercise", ex_list, index=0, key="hist_ex_filter")
 
-    row = conn.execute("SELECT MIN(workout_date), MAX(workout_date) FROM workouts").fetchone()
+    with conn.cursor() as cur:
+        cur.execute("SELECT MIN(workout_date), MAX(workout_date) FROM workouts")
+        row = cur.fetchone()
+
     if not row or row[0] is None:
         st.info("No workouts yet.")
         st.stop()
 
-    dmin = pd.to_datetime(row[0]).date()
-    dmax = pd.to_datetime(row[1]).date()
+    dmin = row[0]
+    dmax = row[1]
 
     with c2:
         d_from = st.date_input("From", value=dmin, min_value=dmin, max_value=dmax, key="hist_from")
