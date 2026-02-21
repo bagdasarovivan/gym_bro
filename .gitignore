@@ -206,3 +206,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 codex_fix.patch
+
+# patches
+*.patch
+*.diff
+*.rej
