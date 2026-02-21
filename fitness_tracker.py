@@ -235,7 +235,7 @@ def get_conn():
         conn.autocommit = False
         return conn
 
-    # fallback: локальный SQLite
+    # fallback: local SQLite
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
@@ -643,9 +643,29 @@ with tab_add:
         )
 
     if add_clicked:
-        st.session_state[sets_key].append(
-            {"time_sec": 0} if mode == "time" else {"weight": 0, "reps": 0}
-        )
+        current_sets = read_sets_from_widgets(ns, len(st.session_state[sets_key]), mode)
+        st.session_state[sets_key] = current_sets
+
+        if mode == "time":
+            last = st.session_state[sets_key][-1]
+            new_val = int(last.get("time_sec", 0))
+
+            st.session_state[sets_key].append({"time_sec": new_val})
+            new_index = len(st.session_state[sets_key])
+
+            st.session_state[f"{ns}_t_{new_index}"] = new_val
+
+        else:
+            last = st.session_state[sets_key][-1]
+            new_w = int(last.get("weight", 0))
+            new_r = int(last.get("reps", 0))
+
+            st.session_state[sets_key].append({"weight": new_w, "reps": new_r})
+            new_index = len(st.session_state[sets_key])
+
+            st.session_state[f"{ns}_w_{new_index}"] = new_w
+            st.session_state[f"{ns}_r_{new_index}"] = new_r
+
         st.rerun()
 
     if remove_clicked and len(st.session_state[sets_key]) > 1:
@@ -732,7 +752,6 @@ with tab_history:
         day_df = day_df.sort_values("workout_id", ascending=False)
 
         # Text for copying ONLY this day
-        # -------- Формирование текста для копирования --------
         lines = [f"📅 {day} · {len(day_df)} exercises"]
         for _, rr in day_df.iterrows():
             sets = ", ".join([s.strip() for s in str(rr["sets"]).split("|")])
