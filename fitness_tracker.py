@@ -1,6 +1,5 @@
 import streamlit as st
 import calendar
-import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import date, timedelta
@@ -9,8 +8,10 @@ import json
 import hashlib
 import re
 import os
+from contextlib import contextmanager
 import psycopg2
 import psycopg2.extras
+from psycopg2 import OperationalError, InterfaceError
 from pathlib import Path
 import streamlit.components.v1 as components
 import uuid
@@ -223,13 +224,32 @@ def read_sets_from_widgets(ns: str, sets_count: int, mode: str) -> list[dict]:
 # =========================
 # DB HELPERS
 # =========================
-@st.cache_resource
-def get_conn():
+def _new_conn():
     db_url = st.secrets.get("DATABASE_URL")
     if not db_url:
         raise RuntimeError("Нет DATABASE_URL в st.secrets (Supabase не подключён)")
     conn = psycopg2.connect(db_url)
-    conn.autocommit = True
+    conn.autocommit = False
+    return conn
+
+
+@st.cache_resource
+def get_conn():
+    return _new_conn()
+
+
+def get_live_conn():
+    conn = get_conn()
+    if conn.closed:
+        get_conn.clear()
+        return get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        conn.commit()
+    except (OperationalError, InterfaceError):
+        get_conn.clear()
+        conn = get_conn()
     return conn
 
 def init_db(conn):
@@ -269,6 +289,15 @@ def init_db(conn):
         cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_sets_workout_setno ON sets(workout_id, set_no);")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
 
     conn.commit()
 
@@ -284,33 +313,49 @@ def seed_exercises_hashed(conn, names: list[str]):
     Seed only when the seed list changes (per session).
     """
     h = _seed_hash(names)
-    key = "_seed_hash_exercises"
-    if st.session_state.get(key) == h:
-        return
 
     clean = [(n.strip(),) for n in names if n and n.strip()]
     if clean:
         with conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_meta WHERE key = %s", ("seed_hash_exercises",))
+            row = cur.fetchone()
+            if row and str(row[0]) == h:
+                return
+
             cur.executemany(
                 "INSERT INTO exercises(name) VALUES(%s) ON CONFLICT (name) DO NOTHING",
                 clean,
             )
+            cur.execute(
+                """
+                INSERT INTO app_meta(key, value)
+                VALUES(%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                ("seed_hash_exercises", h),
+            )
         conn.commit()
-        st.session_state[key] = h
         get_exercises_df.clear()
+
+
+@st.cache_resource
+def ensure_db_ready():
+    conn = get_conn()
+    init_db(conn)
+    seed_exercises_hashed(conn, SEED_EXERCISES)
 
 # =========================
 # CACHED READS
 # =========================
 @st.cache_data(ttl=600)
 def get_exercises_df() -> pd.DataFrame:
-    conn = get_conn()
+    conn = get_live_conn()
     return pd.read_sql_query("SELECT id, name FROM exercises ORDER BY name", conn)
 
 
 @st.cache_data(ttl=600)
 def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
-    conn = get_conn()
+    conn = get_live_conn()
     ym_start = f"{year:04d}-{month:02d}-01"
     last_day = calendar.monthrange(year, month)[1]
     ym_end = f"{year:04d}-{month:02d}-{last_day:02d}"
@@ -328,7 +373,7 @@ def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def get_history_compact(exercise: str | None, d_from: str, d_to: str) -> pd.DataFrame:
-    conn = get_conn()
+    conn = get_live_conn()
 
     base = """
         SELECT
@@ -361,32 +406,46 @@ def get_history_compact(exercise: str | None, d_from: str, d_to: str) -> pd.Data
 
 
 @st.cache_data(ttl=300)
-def get_exercise_sets_for_progress(exercise_name: str) -> pd.DataFrame:
-    conn = get_conn()
+def get_progress_daily(exercise_name: str) -> pd.DataFrame:
+    conn = get_live_conn()
     return pd.read_sql_query(
         """
         SELECT
             w.workout_date,
-            s.weight,
-            s.reps
+            MAX(s.weight * (1 + (s.reps / 30.0))) AS est_1rm,
+            MAX(s.weight) AS top_weight
         FROM workouts w
         JOIN exercises e ON e.id = w.exercise_id
         JOIN sets s ON s.workout_id = w.id
         WHERE e.name = %s
         AND (s.time_sec IS NULL OR s.time_sec = 0)
         AND s.weight > 0 AND s.reps > 0
-        ORDER BY w.workout_date ASC, w.id ASC, s.set_no ASC
+        GROUP BY w.workout_date
+        ORDER BY w.workout_date ASC
         """,
         conn,
         params=(exercise_name,),
     )
 
 
+@st.cache_data(ttl=300)
+def get_history_date_bounds() -> tuple[date | None, date | None]:
+    conn = get_live_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT MIN(workout_date), MAX(workout_date) FROM workouts")
+        row = cur.fetchone()
+    if not row:
+        return (None, None)
+    return (row[0], row[1])
+
+
 def clear_cache_after_write():
     get_exercises_df.clear()
     get_month_daily_df.clear()
     get_history_compact.clear()
-    get_exercise_sets_for_progress.clear()
+    get_progress_daily.clear()
+    get_history_date_bounds.clear()
+    get_workout_for_edit_cached.clear()
 
 
 # =========================
@@ -399,10 +458,13 @@ def upsert_exercise(conn, name: str) -> int:
 
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO exercises(name) VALUES(%s) ON CONFLICT (name) DO NOTHING",
+            """
+            INSERT INTO exercises(name) VALUES(%s)
+            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+            RETURNING id
+            """,
             (name,),
         )
-        cur.execute("SELECT id FROM exercises WHERE name = %s", (name,))
         row = cur.fetchone()
 
     conn.commit()
@@ -450,26 +512,51 @@ def delete_workout(conn, workout_id: int):
 
 
 def get_workout_for_edit(conn, workout_id: int) -> dict:
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT w.id, w.workout_date, e.name
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                w.id AS workout_id,
+                w.workout_date,
+                e.name AS exercise,
+                COALESCE(
+                    json_agg(
+                        json_build_object(
+                            'set_no', s.set_no,
+                            'weight', s.weight,
+                            'reps', s.reps,
+                            'time_sec', s.time_sec
+                        )
+                        ORDER BY s.set_no
+                    ) FILTER (WHERE s.id IS NOT NULL),
+                    '[]'::json
+                ) AS sets
             FROM workouts w
             JOIN exercises e ON e.id = w.exercise_id
+            LEFT JOIN sets s ON s.workout_id = w.id
             WHERE w.id = %s
-        """, (workout_id,))
+            GROUP BY w.id, w.workout_date, e.name
+            """,
+            (workout_id,),
+        )
         row = cur.fetchone()
 
     if not row:
         raise ValueError("Workout not found")
 
-    sets = pd.read_sql_query("""
-        SELECT set_no, weight, reps, time_sec
-        FROM sets
-        WHERE workout_id = %s
-        ORDER BY set_no ASC
-    """, conn, params=(workout_id,))
+    sets_df = pd.DataFrame(row["sets"])
+    return {
+        "workout_id": int(row["workout_id"]),
+        "workout_date": str(row["workout_date"]),
+        "exercise": str(row["exercise"]),
+        "sets": sets_df,
+    }
 
-    return {"workout_id": int(row[0]), "workout_date": str(row[1]), "exercise": str(row[2]), "sets": sets}
+
+@st.cache_data(ttl=300)
+def get_workout_for_edit_cached(workout_id: int) -> dict:
+    conn = get_live_conn()
+    return get_workout_for_edit(conn, workout_id)
 
 # =========================
 # COPY TO CLIPBOARD (JS)
@@ -520,9 +607,8 @@ with col2:
 # INIT DB + SEED
 # =========================
 try:
-    conn = get_conn()
-    init_db(conn)
-    seed_exercises_hashed(conn, SEED_EXERCISES)
+    conn = get_live_conn()
+    ensure_db_ready()
 except Exception as e:
     st.error(f"DB connect failed: {e}")
     st.stop()    
@@ -628,7 +714,6 @@ with tab_add:
     # Apply action: just sync sets_key with what is currently selected
     if apply_btn:
         st.session_state[sets_key] = sets_rows
-        st.rerun()
 
     # buttons BELOW the box (как на твоём скрине)
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
@@ -699,21 +784,24 @@ with tab_add:
 
             if not normalized:
                 st.error("Add at least one filled set.")
-                st.stop()
+                normalized = []
 
-            ex_id = upsert_exercise(conn, exercise_name)
-            insert_workout(conn, str(workout_date), ex_id, normalized)
+            if not normalized:
+                pass
+            else:
+                ex_id = upsert_exercise(conn, exercise_name)
+                insert_workout(conn, str(workout_date), ex_id, normalized)
 
-            st.success("Saved ✅")
+                st.success("Saved ✅")
 
-            # reset state and widget keys
-            st.session_state[sets_key] = [{"time_sec": 0}] if mode == "time" else [{"weight": 0, "reps": 0}]
-            for i in range(1, 60):
-                st.session_state.pop(f"{ns}_w_{i}", None)
-                st.session_state.pop(f"{ns}_r_{i}", None)
-                st.session_state.pop(f"{ns}_t_{i}", None)
+                # reset state and widget keys
+                st.session_state[sets_key] = [{"time_sec": 0}] if mode == "time" else [{"weight": 0, "reps": 0}]
+                for i in range(1, 60):
+                    st.session_state.pop(f"{ns}_w_{i}", None)
+                    st.session_state.pop(f"{ns}_r_{i}", None)
+                    st.session_state.pop(f"{ns}_t_{i}", None)
 
-            st.rerun()
+                st.rerun()
 
         except Exception as e:
             st.error(f"Save failed: {e}")
@@ -735,22 +823,20 @@ with tab_history:
     with c1:
         ex_filter = st.selectbox("Exercise", ex_list, index=0, key="hist_ex_filter")
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT MIN(workout_date), MAX(workout_date) FROM workouts")
-        row = cur.fetchone()
-
-    if not row or row[0] is None:
+    dmin, dmax = get_history_date_bounds()
+    if dmin is None:
         st.info("No workouts yet.")
         st.stop()
-
-    dmin = row[0]
-    dmax = row[1]
     default_from = max(dmin, dmax - timedelta(days=30))
 
     with c2:
         d_from = st.date_input("From", value=default_from, min_value=dmin, max_value=dmax, key="hist_from")
     with c3:
         d_to = st.date_input("To", value=dmax, min_value=dmin, max_value=dmax, key="hist_to")
+
+    if d_from > d_to:
+        st.warning("'From' не может быть больше 'To'.")
+        st.stop()
 
     t0 = time.time()
     view = get_history_compact(ex_filter, str(d_from), str(d_to))
@@ -817,8 +903,8 @@ with tab_history:
                 with m:
                     pop = st.popover("✏️ Edit", use_container_width=True)
                     with pop:
-                        st.info("Edit UI пока не подключён (можно добавить позже).")
-                        data = get_workout_for_edit(conn, workout_id)
+                        st.info("Details only: редактирование пока не подключено.")
+                        data = get_workout_for_edit_cached(workout_id)
                         st.write(
                             {
                                 "date": data["workout_date"],
@@ -938,7 +1024,7 @@ with tab_progress:
     ex = st.selectbox("Exercise", ex_names, key="progress_exercise_select")
 
     t_p = time.time()
-    df = get_exercise_sets_for_progress(ex)
+    df = get_progress_daily(ex)
     dbg(f"progress_sets: {time.time() - t_p:.3f}s | rows={len(df)}")
 
     if df.empty:
@@ -948,21 +1034,15 @@ with tab_progress:
     # Ensure datetime on x-axis
     df["workout_date"] = pd.to_datetime(df["workout_date"])
 
-    # Estimated 1RM
-    df["est_1rm"] = df["weight"] * (1 + (df["reps"] / 30.0))
-
-    best_1rm_by_day = df.groupby("workout_date", as_index=False)["est_1rm"].max()
-    top_w_by_day = df.groupby("workout_date", as_index=False)["weight"].max()
-
     fig, ax1 = plt.subplots()
-    ax1.plot(best_1rm_by_day["workout_date"], best_1rm_by_day["est_1rm"])
+    ax1.plot(df["workout_date"], df["est_1rm"])
     ax1.set_title(f"{ex} — Estimated 1RM & Top weight by day")
     ax1.set_xlabel("Date")
     ax1.set_ylabel("Estimated 1RM")
     plt.xticks(rotation=45)
 
     ax2 = ax1.twinx()
-    ax2.plot(top_w_by_day["workout_date"], top_w_by_day["weight"])
+    ax2.plot(df["workout_date"], df["top_weight"])
     ax2.set_ylabel("Top weight (kg)")
 
     st.pyplot(fig)
