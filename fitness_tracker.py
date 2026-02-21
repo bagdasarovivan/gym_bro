@@ -8,6 +8,9 @@ import time
 import json
 import hashlib
 import re
+import os
+import psycopg2
+import psycopg2.extras
 from pathlib import Path
 import streamlit.components.v1 as components
 import uuid
@@ -224,13 +227,20 @@ def read_sets_from_widgets(ns: str, sets_count: int, mode: str) -> list[dict]:
 # DB HELPERS
 # =========================
 @st.cache_resource
-def get_conn() -> sqlite3.Connection:
+def get_conn():
+    db_url = st.secrets.get("DATABASE_URL", None)
+
+    if db_url:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = False
+        return conn
+
+    # fallback: локальный SQLite
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
-
 
 def init_db(conn: sqlite3.Connection):
     cur = conn.cursor()
