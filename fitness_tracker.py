@@ -989,12 +989,7 @@ with tab_add:
                 with c2:
                     st.selectbox(f"Set {idx} — Reps", profile["reps_options"], key=key_r)
 
-        apply_btn = st.button("✅ Apply sets", use_container_width=False)
-
     st.session_state[sets_key] = read_sets_from_widgets(ns, len(st.session_state[sets_key]), mode)
-
-    if apply_btn:
-        st.session_state[sets_key] = read_sets_from_widgets(ns, len(st.session_state[sets_key]), mode)
 
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1, 1], gap="small")
