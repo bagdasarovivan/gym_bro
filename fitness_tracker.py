@@ -672,6 +672,43 @@ def get_weekly_volume(exercise_name: str, weeks: int = 8) -> pd.DataFrame:
 
 
 # =========================
+# NEW: LAST SESSION HINT
+# =========================
+@st.cache_data(ttl=300)
+def get_last_session(exercise_name: str) -> dict | None:
+    """Return last workout date + sets string for an exercise."""
+    conn = get_live_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                w.workout_date,
+                string_agg(
+                    CASE
+                        WHEN s.time_sec IS NOT NULL AND s.time_sec > 0
+                            THEN (s.time_sec::text || 's')
+                        ELSE (s.weight::int::text || '×' || s.reps::text)
+                    END,
+                    ' · '
+                    ORDER BY s.set_no
+                ) AS sets
+            FROM workouts w
+            JOIN exercises e ON e.id = w.exercise_id
+            JOIN sets s ON s.workout_id = w.id
+            WHERE e.name = %s
+            GROUP BY w.id, w.workout_date
+            ORDER BY w.workout_date DESC, w.id DESC
+            LIMIT 1
+            """,
+            (exercise_name,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {"date": row[0], "sets": row[1]}
+
+
+# =========================
 # NEW: WEEKDAY FREQUENCY
 # =========================
 @st.cache_data(ttl=300)
@@ -703,6 +740,7 @@ def clear_cache_after_write():
     get_weekly_volume.clear()
     get_weekday_frequency.clear()
     get_overall_stats.clear()
+    get_last_session.clear()
 
 
 # =========================
@@ -953,6 +991,33 @@ with tab_add:
 
     exercise_name = st.selectbox("Exercise", ex_options, key="add_exercise_select")
     safe_image(EXERCISE_IMAGES.get(exercise_name), width=140)
+
+    # --- Last session hint ---
+    last = get_last_session(exercise_name)
+    if last:
+        days_ago = (date.today() - last["date"]).days
+        if days_ago == 0:
+            when = "сегодня"
+        elif days_ago == 1:
+            when = "вчера"
+        else:
+            when = f"{days_ago} дней назад"
+        st.markdown(
+            f"""
+            <div style="
+                background: rgba(41,121,255,0.08);
+                border: 1px solid rgba(41,121,255,0.2);
+                border-radius: 12px;
+                padding: 10px 14px;
+                margin: 8px 0 4px 0;
+                font-size: 13px;
+            ">
+                💡 <b>В прошлый раз</b> ({when}, {last["date"].strftime("%d %b")}):&nbsp;
+                <span style="color:#82B1FF">{last["sets"]}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     ex_type = EXERCISE_TYPE.get(exercise_name, "light")
     profile = TYPE_PROFILES[ex_type]
