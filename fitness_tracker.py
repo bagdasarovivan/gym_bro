@@ -444,10 +444,16 @@ def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
     ym_end = f"{year:04d}-{month:02d}-{last_day:02d}"
     return pd.read_sql_query(
         """
-        SELECT workout_date, COUNT(*) AS entries
-        FROM workouts
-        WHERE workout_date BETWEEN %s AND %s
-        GROUP BY workout_date
+        SELECT
+            w.workout_date,
+            COUNT(DISTINCT w.id) AS entries,
+            COALESCE(SUM(s.weight * s.reps), 0) AS total_kg
+        FROM workouts w
+        LEFT JOIN sets s ON s.workout_id = w.id
+            AND s.weight > 0 AND s.reps > 0
+            AND (s.time_sec IS NULL OR s.time_sec = 0)
+        WHERE w.workout_date BETWEEN %s AND %s
+        GROUP BY w.workout_date
         """,
         conn,
         params=(ym_start, ym_end),
@@ -517,6 +523,39 @@ def get_history_date_bounds() -> tuple[date | None, date | None]:
     if not row or not row[0]:
         return (None, None)
     return (row[0], row[1])
+
+
+# =========================
+# NEW: OVERALL STATS
+# =========================
+@st.cache_data(ttl=300)
+def get_overall_stats() -> dict:
+    """Total workouts, total kg lifted, this month workouts."""
+    conn = get_live_conn()
+    today = date.today()
+    month_start = today.replace(day=1)
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(DISTINCT id) FROM workouts")
+        total_workouts = int(cur.fetchone()[0] or 0)
+        cur.execute(
+            "SELECT COUNT(DISTINCT id) FROM workouts WHERE workout_date >= %s",
+            (str(month_start),),
+        )
+        month_workouts = int(cur.fetchone()[0] or 0)
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(s.weight * s.reps), 0)
+            FROM sets s
+            WHERE s.weight > 0 AND s.reps > 0
+              AND (s.time_sec IS NULL OR s.time_sec = 0)
+            """
+        )
+        total_kg = float(cur.fetchone()[0] or 0)
+    return {
+        "total_workouts": total_workouts,
+        "month_workouts": month_workouts,
+        "total_kg": total_kg,
+    }
 
 
 # =========================
@@ -663,6 +702,7 @@ def clear_cache_after_write():
     get_workout_prs.clear()
     get_weekly_volume.clear()
     get_weekday_frequency.clear()
+    get_overall_stats.clear()
 
 
 # =========================
@@ -1275,6 +1315,26 @@ with tab_history:
 with tab_progress:
     st.subheader("Progress")
 
+    # =========================
+    # STATS CARDS
+    # =========================
+    stats = get_overall_stats()
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.metric("🗓 Тренировок в этом месяце", stats["month_workouts"])
+    with s2:
+        st.metric("💪 Всего тренировок", stats["total_workouts"])
+    with s3:
+        total_t = stats["total_kg"]
+        if total_t >= 1_000_000:
+            label = f"{total_t/1_000_000:.1f}M kg"
+        elif total_t >= 1000:
+            label = f"{total_t/1000:.1f}K kg"
+        else:
+            label = f"{int(total_t):,} kg"
+        st.metric("🏋️ Всего поднято", label)
+
+    st.divider()
     st.markdown("## 🗓 Training calendar")
 
     if "cal_month" not in st.session_state or "cal_year" not in st.session_state:
@@ -1309,10 +1369,12 @@ with tab_progress:
     dbg(f"month_daily: {time.time() - t_cal:.3f}s | rows={len(month_daily)}")
 
     entries_map: dict[int, int] = {}
+    volume_map: dict[int, int] = {}
     if not month_daily.empty:
         for _, r in month_daily.iterrows():
             d = pd.to_datetime(r["workout_date"]).date().day
             entries_map[int(d)] = int(r["entries"])
+            volume_map[int(d)] = int(float(r.get("total_kg", 0)))
 
     calobj = calendar.Calendar(firstweekday=0)
     weeks = calobj.monthdayscalendar(st.session_state.cal_year, st.session_state.cal_month)
@@ -1322,11 +1384,12 @@ with tab_progress:
     .cal-wrap { width: 100%; max-width: 720px; }
     .cal-grid { width: 100%; border-collapse: separate; border-spacing: 8px; }
     .cal-grid th { text-align: center; font-size: 14px; opacity: 0.8; padding-bottom: 4px; }
-    .cal-grid td { height: 52px; border-radius: 12px; text-align: center; vertical-align: middle; font-size: 16px; }
+    .cal-grid td { height: 64px; border-radius: 12px; text-align: center; vertical-align: middle; font-size: 16px; }
     .cal-day { background: rgba(255,255,255,0.06); }
     .cal-empty { background: transparent; }
     .cal-trained { background: rgba(0, 200, 83, 0.28); border: 1px solid rgba(0, 200, 83, 0.45); }
-    .cal-count { display:block; font-size: 12px; opacity: 0.85; margin-top: 2px; }
+    .cal-vol { display:block; font-size: 11px; color: #69F0AE; margin-top: 2px; opacity: 0.9; }
+    .cal-empty-sub { display:block; font-size: 11px; opacity: 0; margin-top: 2px; }
     </style>
     """
 
@@ -1343,13 +1406,13 @@ with tab_progress:
             else:
                 trained = d in entries_map
                 cls = "cal-day cal-trained" if trained else "cal-day"
-                # Fixed: correct Russian plural
-                cnt = (
-                    f'<span class="cal-count">{plural_entries(entries_map[d])}</span>'
-                    if trained
-                    else '<span class="cal-count">&nbsp;</span>'
-                )
-                html.append(f'<td class="{cls}">{d}{cnt}</td>')
+                if trained:
+                    vol = volume_map.get(d, 0)
+                    vol_label = f"{vol:,} kg" if vol > 0 else ""
+                    sub = f'<span class="cal-vol">{vol_label}</span>'
+                else:
+                    sub = '<span class="cal-empty-sub">-</span>'
+                html.append(f'<td class="{cls}">{d}{sub}</td>')
         html.append("</tr>")
 
     html.append("</tbody></table></div>")
