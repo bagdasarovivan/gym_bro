@@ -1382,7 +1382,7 @@ with tab_progress:
             lines1, labels1 = ax1.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left",
-                       facecolor="none", edgecolor="rgba(255,255,255,0.2)", labelcolor="white")
+                       facecolor="#1a1a1a", edgecolor="#444444", labelcolor="white")
 
             ax1.set_title(f"{ex} — 1RM & Top weight", color="white", fontsize=13, pad=12)
             fig.tight_layout()
