@@ -632,6 +632,25 @@ def get_weekly_volume(exercise_name: str, weeks: int = 8) -> pd.DataFrame:
     )
 
 
+# =========================
+# NEW: WEEKDAY FREQUENCY
+# =========================
+@st.cache_data(ttl=300)
+def get_weekday_frequency() -> pd.DataFrame:
+    """Count distinct training days per ISO weekday (1=Mon, 7=Sun)."""
+    conn = get_live_conn()
+    return pd.read_sql_query(
+        """
+        SELECT EXTRACT(ISODOW FROM workout_date)::int AS isodow,
+               COUNT(DISTINCT workout_date) AS cnt
+        FROM workouts
+        GROUP BY isodow
+        ORDER BY isodow
+        """,
+        conn,
+    )
+
+
 def clear_cache_after_write():
     get_exercises_df.clear()
     get_month_daily_df.clear()
@@ -643,6 +662,7 @@ def clear_cache_after_write():
     get_all_prs.clear()
     get_workout_prs.clear()
     get_weekly_volume.clear()
+    get_weekday_frequency.clear()
 
 
 # =========================
@@ -1431,21 +1451,62 @@ with tab_progress:
                 st.info("Not enough data for weekly volume.")
             else:
                 max_vol = float(vol_df["volume"].max())
-                vol_html = ['<div style="margin-top:8px">']
-                for _, row in vol_df.iterrows():
-                    week_label = pd.to_datetime(row["week_start"]).strftime("%d %b")
-                    vol = float(row["volume"])
+                rows_html = ""
+                for _, vrow in vol_df.iterrows():
+                    week_label = pd.to_datetime(vrow["week_start"]).strftime("%d %b")
+                    vol = float(vrow["volume"])
                     bar_pct = (vol / max_vol * 100) if max_vol > 0 else 0
-                    vol_html.append(f"""
-                    <div class="vol-row">
-                        <div class="vol-label">{week_label}</div>
-                        <div class="vol-bar-bg">
-                            <div class="vol-bar-fill" style="width:{bar_pct:.1f}%"></div>
-                        </div>
-                        <div class="vol-value">{int(vol):,} kg</div>
-                    </div>
-                    """)
-                vol_html.append("</div>")
-                st.markdown("".join(vol_html), unsafe_allow_html=True)
+                    vol_fmt = f"{int(vol):,} kg"
+                    rows_html += (
+                        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
+                        f'<div style="font-size:13px;opacity:0.75;width:90px;flex-shrink:0">{week_label}</div>'
+                        '<div style="flex:1;background:rgba(255,255,255,0.08);border-radius:99px;height:18px;overflow:hidden">'
+                        f'<div style="height:18px;border-radius:99px;background:linear-gradient(90deg,#2979FF,#82B1FF);width:{bar_pct:.1f}%"></div>'
+                        "</div>"
+                        f'<div style="font-size:13px;width:80px;text-align:right;flex-shrink:0">{vol_fmt}</div>'
+                        "</div>"
+                    )
+                components.html(
+                    "<div style='font-family:sans-serif;color:white;padding:4px 0'>" + rows_html + "</div>",
+                    height=max(60, len(vol_df) * 34 + 20),
+                )
+
+        st.divider()
+        st.markdown("## 📅 Частота тренировок по дням недели")
+        freq_df = get_weekday_frequency()
+        if freq_df.empty:
+            st.info("Недостаточно данных.")
+        else:
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            counts = {int(r["isodow"]): int(r["cnt"]) for _, r in freq_df.iterrows()}
+            max_cnt = max(counts.values()) if counts else 1
+
+            bars_html = ""
+            for dow in range(1, 8):
+                cnt = counts.get(dow, 0)
+                bar_h_pct = (cnt / max_cnt * 100) if max_cnt > 0 else 0
+                bar_color = "linear-gradient(180deg,#FF6400,#FF8C42)" if dow >= 6 else "linear-gradient(180deg,#00C853,#69F0AE)"
+                label = day_names[dow - 1]
+                min_h = "4px" if cnt > 0 else "0"
+                bars_html += (
+                    '<div style="display:flex;flex-direction:column;align-items:center;flex:1;gap:6px">'
+                    f'<div style="font-size:13px;opacity:0.85;font-weight:600">{cnt if cnt > 0 else ""}</div>'
+                    '<div style="width:100%;display:flex;align-items:flex-end;justify-content:center;height:80px">'
+                    f'<div style="width:70%;border-radius:8px 8px 0 0;background:{bar_color};height:{bar_h_pct:.0f}%;min-height:{min_h}"></div>'
+                    "</div>"
+                    f'<div style="font-size:14px;opacity:0.75">{label}</div>'
+                    "</div>"
+                )
+
+            total_days = sum(counts.values())
+            components.html(
+                "<div style='font-family:sans-serif;color:white;padding:8px 0'>"
+                "<div style='display:flex;gap:6px;align-items:flex-end;padding:0 8px'>"
+                + bars_html +
+                "</div>"
+                f"<div style='font-size:12px;opacity:0.5;margin-top:10px;text-align:center'>Всего тренировочных дней: {total_days}</div>"
+                "</div>",
+                height=160,
+            )
 
 dbg(f"Render: {time.time() - start_total:.3f} sec")
