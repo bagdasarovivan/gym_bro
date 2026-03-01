@@ -2,6 +2,7 @@ import streamlit as st
 import calendar
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from datetime import date, timedelta
 import time
 import json
@@ -187,6 +188,95 @@ st.markdown(
 }
 .set-chip strong { font-weight: 800; }
 .small-muted { opacity: .75; font-size: 13px; }
+
+/* Workout card in History */
+.workout-card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 14px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+}
+.workout-card-exercise {
+    font-size: 17px;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+.pr-badge {
+    display: inline-block;
+    background: rgba(255, 215, 0, 0.18);
+    border: 1px solid rgba(255, 215, 0, 0.4);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 12px;
+    margin-left: 8px;
+    color: #FFD700;
+}
+
+/* Streak badge */
+.streak-box {
+    background: linear-gradient(135deg, rgba(255,100,0,0.15), rgba(255,60,0,0.08));
+    border: 1px solid rgba(255,100,0,0.3);
+    border-radius: 14px;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+.streak-number {
+    font-size: 42px;
+    font-weight: 900;
+    color: #FF6400;
+    line-height: 1;
+}
+.streak-label {
+    font-size: 15px;
+    opacity: 0.85;
+}
+
+/* PR progress bar */
+.pr-progress-wrap {
+    background: rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin: 12px 0;
+}
+.pr-bar-bg {
+    background: rgba(255,255,255,0.1);
+    border-radius: 99px;
+    height: 10px;
+    margin-top: 8px;
+    overflow: hidden;
+}
+.pr-bar-fill {
+    height: 10px;
+    border-radius: 99px;
+    background: linear-gradient(90deg, #00C853, #69F0AE);
+    transition: width 0.4s ease;
+}
+
+/* Weekly volume bars */
+.vol-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+.vol-label { font-size: 13px; opacity: 0.75; width: 90px; flex-shrink: 0; }
+.vol-bar-bg {
+    flex: 1;
+    background: rgba(255,255,255,0.08);
+    border-radius: 99px;
+    height: 18px;
+    overflow: hidden;
+}
+.vol-bar-fill {
+    height: 18px;
+    border-radius: 99px;
+    background: linear-gradient(90deg, #2979FF, #82B1FF);
+}
+.vol-value { font-size: 13px; opacity: 0.85; width: 80px; text-align: right; flex-shrink: 0; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -252,6 +342,7 @@ def get_live_conn():
         conn = get_conn()
     return conn
 
+
 def init_db(conn):
     with conn.cursor() as cur:
         cur.execute(
@@ -262,7 +353,6 @@ def init_db(conn):
             );
             """
         )
-
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS workouts (
@@ -272,7 +362,6 @@ def init_db(conn):
             );
             """
         )
-
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS sets (
@@ -285,7 +374,6 @@ def init_db(conn):
             );
             """
         )
-
         cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(workout_date);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_workouts_exercise ON workouts(exercise_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sets_workout ON sets(workout_id);")
@@ -298,7 +386,6 @@ def init_db(conn):
             );
             """
         )
-
     conn.commit()
 
 
@@ -309,11 +396,7 @@ def _seed_hash(names: list[str]) -> str:
 
 
 def seed_exercises_hashed(conn, names: list[str]):
-    """
-    Seed only when the seed list changes (per session).
-    """
     h = _seed_hash(names)
-
     clean = [(n.strip(),) for n in names if n and n.strip()]
     if clean:
         with conn.cursor() as cur:
@@ -321,7 +404,6 @@ def seed_exercises_hashed(conn, names: list[str]):
             row = cur.fetchone()
             if row and str(row[0]) == h:
                 return
-
             cur.executemany(
                 "INSERT INTO exercises(name) VALUES(%s) ON CONFLICT (name) DO NOTHING",
                 clean,
@@ -344,6 +426,7 @@ def ensure_db_ready():
     init_db(conn)
     seed_exercises_hashed(conn, SEED_EXERCISES)
 
+
 # =========================
 # CACHED READS
 # =========================
@@ -360,21 +443,20 @@ def get_month_daily_df(year: int, month: int) -> pd.DataFrame:
     last_day = calendar.monthrange(year, month)[1]
     ym_end = f"{year:04d}-{month:02d}-{last_day:02d}"
     return pd.read_sql_query(
-    """
-    SELECT workout_date, COUNT(*) AS entries
-    FROM workouts
-    WHERE workout_date BETWEEN %s AND %s
-    GROUP BY workout_date
-    """,
-    conn,
-    params=(ym_start, ym_end),
+        """
+        SELECT workout_date, COUNT(*) AS entries
+        FROM workouts
+        WHERE workout_date BETWEEN %s AND %s
+        GROUP BY workout_date
+        """,
+        conn,
+        params=(ym_start, ym_end),
     )
 
 
 @st.cache_data(ttl=300)
 def get_history_compact(exercise: str | None, d_from: str, d_to: str) -> pd.DataFrame:
     conn = get_live_conn()
-
     base = """
         SELECT
             w.id AS workout_id,
@@ -396,11 +478,9 @@ def get_history_compact(exercise: str | None, d_from: str, d_to: str) -> pd.Data
         GROUP BY w.id, w.workout_date, e.name
         ORDER BY w.workout_date DESC, w.id ASC
     """
-
     if exercise and exercise != "All":
         q = base.format(ex_filter="AND e.name = %s")
         return pd.read_sql_query(q, conn, params=(d_from, d_to, exercise))
-
     q = base.format(ex_filter="")
     return pd.read_sql_query(q, conn, params=(d_from, d_to))
 
@@ -434,9 +514,122 @@ def get_history_date_bounds() -> tuple[date | None, date | None]:
     with conn.cursor() as cur:
         cur.execute("SELECT MIN(workout_date), MAX(workout_date) FROM workouts")
         row = cur.fetchone()
-    if not row:
+    if not row or not row[0]:
         return (None, None)
     return (row[0], row[1])
+
+
+# =========================
+# NEW: STREAK
+# =========================
+@st.cache_data(ttl=300)
+def get_training_streak() -> int:
+    """Count consecutive days with at least one workout ending today or yesterday."""
+    conn = get_live_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT workout_date FROM workouts ORDER BY workout_date DESC")
+        rows = cur.fetchall()
+    if not rows:
+        return 0
+
+    dates = sorted({r[0] for r in rows}, reverse=True)
+    today = date.today()
+    # Start from today or yesterday
+    if dates[0] < today - timedelta(days=1):
+        return 0
+
+    streak = 0
+    expected = dates[0]
+    for d in dates:
+        if d == expected:
+            streak += 1
+            expected = expected - timedelta(days=1)
+        elif d < expected:
+            break
+    return streak
+
+
+# =========================
+# NEW: PERSONAL RECORDS
+# =========================
+@st.cache_data(ttl=300)
+def get_all_prs() -> dict[str, float]:
+    """Return best est_1rm per exercise."""
+    conn = get_live_conn()
+    df = pd.read_sql_query(
+        """
+        SELECT e.name AS exercise,
+               MAX(s.weight * (1 + s.reps / 30.0)) AS best_1rm
+        FROM sets s
+        JOIN workouts w ON w.id = s.workout_id
+        JOIN exercises e ON e.id = w.exercise_id
+        WHERE s.weight > 0 AND s.reps > 0
+          AND (s.time_sec IS NULL OR s.time_sec = 0)
+        GROUP BY e.name
+        """,
+        conn,
+    )
+    if df.empty:
+        return {}
+    return dict(zip(df["exercise"], df["best_1rm"]))
+
+
+@st.cache_data(ttl=300)
+def get_workout_prs() -> dict[int, bool]:
+    """Return set of workout_ids that contain a PR (best 1RM on that date)."""
+    conn = get_live_conn()
+    df = pd.read_sql_query(
+        """
+        WITH ranked AS (
+            SELECT
+                w.id AS workout_id,
+                e.name AS exercise,
+                MAX(s.weight * (1 + s.reps / 30.0)) AS session_1rm,
+                MAX(MAX(s.weight * (1 + s.reps / 30.0)))
+                    OVER (PARTITION BY e.name ORDER BY w.workout_date ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+                    AS prev_best
+            FROM sets s
+            JOIN workouts w ON w.id = s.workout_id
+            JOIN exercises e ON e.id = w.exercise_id
+            WHERE s.weight > 0 AND s.reps > 0
+              AND (s.time_sec IS NULL OR s.time_sec = 0)
+            GROUP BY w.id, e.name, w.workout_date
+        )
+        SELECT workout_id FROM ranked
+        WHERE prev_best IS NULL OR session_1rm > prev_best
+        """,
+        conn,
+    )
+    if df.empty:
+        return {}
+    return {int(wid): True for wid in df["workout_id"]}
+
+
+# =========================
+# NEW: WEEKLY VOLUME
+# =========================
+@st.cache_data(ttl=300)
+def get_weekly_volume(exercise_name: str, weeks: int = 8) -> pd.DataFrame:
+    """Total volume (weight × reps) per week for an exercise."""
+    conn = get_live_conn()
+    return pd.read_sql_query(
+        """
+        SELECT
+            DATE_TRUNC('week', w.workout_date) AS week_start,
+            SUM(s.weight * s.reps) AS volume
+        FROM sets s
+        JOIN workouts w ON w.id = s.workout_id
+        JOIN exercises e ON e.id = w.exercise_id
+        WHERE e.name = %s
+          AND s.weight > 0 AND s.reps > 0
+          AND (s.time_sec IS NULL OR s.time_sec = 0)
+          AND w.workout_date >= CURRENT_DATE - INTERVAL '%s weeks'
+        GROUP BY DATE_TRUNC('week', w.workout_date)
+        ORDER BY week_start ASC
+        """,
+        conn,
+        params=(exercise_name, weeks),
+    )
 
 
 def clear_cache_after_write():
@@ -446,6 +639,10 @@ def clear_cache_after_write():
     get_progress_daily.clear()
     get_history_date_bounds.clear()
     get_workout_for_edit_cached.clear()
+    get_training_streak.clear()
+    get_all_prs.clear()
+    get_workout_prs.clear()
+    get_weekly_volume.clear()
 
 
 # =========================
@@ -455,7 +652,6 @@ def upsert_exercise(conn, name: str) -> int:
     name = name.strip()
     if not name:
         raise ValueError("Empty exercise name")
-
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -466,12 +662,11 @@ def upsert_exercise(conn, name: str) -> int:
             (name,),
         )
         row = cur.fetchone()
-
     conn.commit()
-
     if not row:
         raise RuntimeError("Failed to fetch exercise id")
     return int(row[0])
+
 
 def insert_workout(conn, workout_date: str, exercise_id: int, sets_rows: list[dict]):
     with conn.cursor() as cur:
@@ -480,29 +675,20 @@ def insert_workout(conn, workout_date: str, exercise_id: int, sets_rows: list[di
             (workout_date, exercise_id),
         )
         workout_id = int(cur.fetchone()[0])
-
         payload: list[tuple] = []
         for i, s in enumerate(sets_rows, start=1):
-            payload.append(
-                (
-                    workout_id,
-                    i,
-                    float(s.get("weight", 0)),
-                    int(s.get("reps", 0)),
-                    int(s["time_sec"]) if s.get("time_sec") is not None else None,
-                )
-            )
-
+            payload.append((
+                workout_id, i,
+                float(s.get("weight", 0)), int(s.get("reps", 0)),
+                int(s["time_sec"]) if s.get("time_sec") is not None else None,
+            ))
         cur.executemany(
-            """
-            INSERT INTO sets(workout_id, set_no, weight, reps, time_sec)
-            VALUES(%s, %s, %s, %s, %s)
-            """,
+            "INSERT INTO sets(workout_id, set_no, weight, reps, time_sec) VALUES(%s, %s, %s, %s, %s)",
             payload,
         )
-
     conn.commit()
     clear_cache_after_write()
+
 
 def delete_workout(conn, workout_id: int):
     with conn.cursor() as cur:
@@ -518,27 +704,17 @@ def update_workout(conn, workout_id: int, workout_date: str, exercise_id: int, s
             (workout_date, exercise_id, workout_id),
         )
         cur.execute("DELETE FROM sets WHERE workout_id = %s", (workout_id,))
-
         payload: list[tuple] = []
         for i, s in enumerate(sets_rows, start=1):
-            payload.append(
-                (
-                    workout_id,
-                    i,
-                    float(s.get("weight", 0)),
-                    int(s.get("reps", 0)),
-                    int(s["time_sec"]) if s.get("time_sec") is not None else None,
-                )
-            )
-
+            payload.append((
+                workout_id, i,
+                float(s.get("weight", 0)), int(s.get("reps", 0)),
+                int(s["time_sec"]) if s.get("time_sec") is not None else None,
+            ))
         cur.executemany(
-            """
-            INSERT INTO sets(workout_id, set_no, weight, reps, time_sec)
-            VALUES(%s, %s, %s, %s, %s)
-            """,
+            "INSERT INTO sets(workout_id, set_no, weight, reps, time_sec) VALUES(%s, %s, %s, %s, %s)",
             payload,
         )
-
     conn.commit()
     clear_cache_after_write()
 
@@ -572,10 +748,8 @@ def get_workout_for_edit(conn, workout_id: int) -> dict:
             (workout_id,),
         )
         row = cur.fetchone()
-
     if not row:
         raise ValueError("Workout not found")
-
     sets_df = pd.DataFrame(row["sets"])
     return {
         "workout_id": int(row["workout_id"]),
@@ -590,6 +764,7 @@ def get_workout_for_edit_cached(workout_id: int) -> dict:
     conn = get_live_conn()
     return get_workout_for_edit(conn, workout_id)
 
+
 # =========================
 # COPY TO CLIPBOARD (JS)
 # =========================
@@ -597,7 +772,6 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
     js_text = json.dumps(text, ensure_ascii=False)
     js_key = json.dumps(key, ensure_ascii=False)
     js_status = json.dumps(key + "_status", ensure_ascii=False)
-
     html = f"""
     <div style="margin: 8px 0;">
       <button id="{key}" style="
@@ -607,11 +781,9 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
       </button>
       <span id="{key}_status" style="margin-left:10px; opacity:.8; font-size: 13px;"></span>
     </div>
-
     <script>
       const btn = document.getElementById({js_key});
       const status = document.getElementById({js_status});
-
       btn.onclick = async () => {{
         try {{
           await navigator.clipboard.writeText({js_text});
@@ -625,6 +797,26 @@ def copy_to_clipboard_button(text: str, label: str = "📋 Copy", key: str = "co
     </script>
     """
     components.html(html, height=60)
+
+
+# =========================
+# HELPERS
+# =========================
+def plural_ru(n: int, one: str, few: str, many: str) -> str:
+    """Russian plural: 1 тренировка, 2 тренировки, 5 тренировок"""
+    if 11 <= (n % 100) <= 19:
+        return many
+    r = n % 10
+    if r == 1:
+        return one
+    if 2 <= r <= 4:
+        return few
+    return many
+
+
+def plural_entries(n: int) -> str:
+    return f"{n} {plural_ru(n, 'запись', 'записи', 'записей')}"
+
 
 # =========================
 # HEADER
@@ -653,6 +845,35 @@ tab_add, tab_history, tab_progress = st.tabs(["➕ Add workout", "📜 History",
 with tab_add:
     st.subheader("Add workout")
 
+    # --- Streak banner ---
+    streak = get_training_streak()
+    if streak >= 2:
+        st.markdown(
+            f"""
+            <div class="streak-box">
+                <div class="streak-number">{streak}🔥</div>
+                <div>
+                    <div style="font-weight:700; font-size:16px;">Streak!</div>
+                    <div class="streak-label">{streak} {plural_ru(streak, 'день подряд', 'дня подряд', 'дней подряд')} — не останавливайся!</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif streak == 1:
+        st.markdown(
+            """
+            <div class="streak-box">
+                <div class="streak-number">1🔥</div>
+                <div>
+                    <div style="font-weight:700; font-size:16px;">Хорошее начало!</div>
+                    <div class="streak-label">Приходи завтра и серия продолжится</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     workout_date = st.date_input(
         "📅 Date",
         value=date.today(),
@@ -677,20 +898,14 @@ with tab_add:
     profile = TYPE_PROFILES[ex_type]
     mode = profile["mode"]
 
-    # Stable form namespace: avoids "garbage" states when date/exercise changes
-    # We keep a per-exercise UUID until exercise changes.
     if "add_ns_by_ex" not in st.session_state:
         st.session_state.add_ns_by_ex = {}
-
     if exercise_name not in st.session_state.add_ns_by_ex:
         st.session_state.add_ns_by_ex[exercise_name] = uuid.uuid4().hex[:10]
 
     ns = f"add_{st.session_state.add_ns_by_ex[exercise_name]}"
     sets_key = f"sets_{ns}"
 
-    # -------------------------
-    # SETS UI (single source of truth: st.session_state[sets_key])
-    # -------------------------
     if sets_key not in st.session_state:
         st.session_state[sets_key] = [{"time_sec": 0}] if mode == "time" else [{"weight": 0, "reps": 0}]
 
@@ -700,33 +915,19 @@ with tab_add:
                 key_t = f"{ns}_t_{idx}"
                 if key_t not in st.session_state:
                     st.session_state[key_t] = int(s.get("time_sec", 0) or 0)
-                st.selectbox(
-                    f"Set {idx} — Time (sec)",
-                    profile["time_options"],
-                    key=key_t,
-                )
+                st.selectbox(f"Set {idx} — Time (sec)", profile["time_options"], key=key_t)
             else:
                 c1, c2 = st.columns(2)
                 key_w = f"{ns}_w_{idx}"
                 key_r = f"{ns}_r_{idx}"
-
                 if key_w not in st.session_state:
                     st.session_state[key_w] = int(s.get("weight", 0) or 0)
                 if key_r not in st.session_state:
                     st.session_state[key_r] = int(s.get("reps", 0) or 0)
-
                 with c1:
-                    st.selectbox(
-                        f"Set {idx} — Weight (kg)",
-                        profile["weight_options"],
-                        key=key_w,
-                    )
+                    st.selectbox(f"Set {idx} — Weight (kg)", profile["weight_options"], key=key_w)
                 with c2:
-                    st.selectbox(
-                        f"Set {idx} — Reps",
-                        profile["reps_options"],
-                        key=key_r,
-                    )
+                    st.selectbox(f"Set {idx} — Reps", profile["reps_options"], key=key_r)
 
         apply_btn = st.button("✅ Apply sets", use_container_width=False)
 
@@ -748,7 +949,6 @@ with tab_add:
     if add_btn:
         current_rows = read_sets_from_widgets(ns, len(st.session_state[sets_key]), mode)
         st.session_state[sets_key] = current_rows
-
         if mode == "time":
             last_val = int(current_rows[-1].get("time_sec", 0))
             st.session_state[sets_key].append({"time_sec": last_val})
@@ -759,7 +959,6 @@ with tab_add:
             st.session_state[sets_key].append({"weight": last_w, "reps": last_r})
             st.session_state[f"{ns}_w_{len(st.session_state[sets_key])}"] = last_w
             st.session_state[f"{ns}_r_{len(st.session_state[sets_key])}"] = last_r
-
         st.rerun()
 
     if remove_btn:
@@ -773,26 +972,17 @@ with tab_add:
             st.session_state.pop(f"{ns}_t_{last_idx}", None)
         st.rerun()
 
-    # =========================
-    # SESSION SUMMARY (uses saved state)
-    # =========================
     st.markdown("### Session summary")
     current_sets = st.session_state[sets_key]
-
-    # (не обязательно) показать простым текстом:
     if mode == "time":
         txt = " | ".join([f"{int(s.get('time_sec', 0))}s" for s in current_sets])
     else:
         txt = " | ".join([f"{int(s.get('weight', 0))}×{int(s.get('reps', 0))}" for s in current_sets])
     st.caption(txt)
 
-    # =========================
-    # SAVE WORKOUT
-    # =========================
     if st.button("💾 Save workout", key=f"{ns}_save_btn"):
         try:
             current_sets = st.session_state[sets_key]
-
             if mode == "time":
                 cleaned = [s for s in current_sets if int(s.get("time_sec", 0)) > 0]
                 normalized = [{"weight": 0, "reps": 0, "time_sec": int(s["time_sec"])} for s in cleaned]
@@ -802,39 +992,27 @@ with tab_add:
 
             if not normalized:
                 st.error("Add at least one filled set.")
-                normalized = []
-
-            if not normalized:
-                pass
             else:
                 ex_id = upsert_exercise(conn, exercise_name)
                 insert_workout(conn, str(workout_date), ex_id, normalized)
-
                 st.success("Saved ✅")
-
-                # reset state and widget keys
                 st.session_state[sets_key] = [{"time_sec": 0}] if mode == "time" else [{"weight": 0, "reps": 0}]
                 for i in range(1, 60):
                     st.session_state.pop(f"{ns}_w_{i}", None)
                     st.session_state.pop(f"{ns}_r_{i}", None)
                     st.session_state.pop(f"{ns}_t_{i}", None)
-
                 st.rerun()
-
         except Exception as e:
             conn.rollback()
             st.error(f"Save failed: {e}")
 
 
-
 # =========================
 # TAB: History
 # =========================
-
 with tab_history:
     st.subheader("History")
 
-    # --- Filters ---
     ex_df = get_exercises_df()
     ex_list = ["All"] + ex_df["name"].tolist()
     c1, c2, c3 = st.columns([2, 2, 2])
@@ -845,268 +1023,231 @@ with tab_history:
     dmin, dmax = get_history_date_bounds()
     if dmin is None:
         st.info("No workouts yet.")
-        st.stop()
-    default_from = max(dmin, dmax - timedelta(days=30))
+    else:
+        default_from = max(dmin, dmax - timedelta(days=30))
 
-    with c2:
-        d_from = st.date_input("From", value=default_from, min_value=dmin, max_value=dmax, key="hist_from")
-    with c3:
-        d_to = st.date_input("To", value=dmax, min_value=dmin, max_value=dmax, key="hist_to")
+        with c2:
+            d_from = st.date_input("From", value=default_from, min_value=dmin, max_value=dmax, key="hist_from")
+        with c3:
+            d_to = st.date_input("To", value=dmax, min_value=dmin, max_value=dmax, key="hist_to")
 
-    if d_from > d_to:
-        st.warning("'From' не может быть больше 'To'.")
-        st.stop()
+        if d_from > d_to:
+            st.warning("'From' не может быть больше 'To'.")
+        else:
+            t0 = time.time()
+            view = get_history_compact(ex_filter, str(d_from), str(d_to))
+            dbg(f"history_compact: {time.time() - t0:.3f}s | rows={len(view)}")
 
-    t0 = time.time()
-    view = get_history_compact(ex_filter, str(d_from), str(d_to))
-    dbg(f"history_compact: {time.time() - t0:.3f}s | rows={len(view)}")
+            if view.empty:
+                st.info("No records for current filters.")
+            else:
+                # Load PR data for badges
+                pr_workout_ids = get_workout_prs()
 
-    if view.empty:
-        st.info("No records for current filters.")
-        st.stop()
+                st.markdown("---")
 
-    st.markdown("---")
+                for day, day_df in view.groupby("workout_date", sort=False):
+                    lines = [f"📅 {day} · {len(day_df)} exercises"]
+                    for _, rr in day_df.iterrows():
+                        sets = ", ".join([s.strip() for s in str(rr["sets"]).split("|")])
+                        lines.append(f"{rr['exercise']}: {sets}")
+                    day_text = "\n".join(lines)
 
-    # --- Day groups (custom accordion + copy button) ---
-    for day, day_df in view.groupby("workout_date", sort=False):
+                    day_id = re.sub(r"[^0-9A-Za-z_]+", "_", str(day))
+                    open_key = f"open_day_{day_id}"
+                    toggle_key = f"toggle_day_{day_id}"
+                    copy_key = f"copy_day_{day_id}"
 
-        # Text for copying ONLY this day
-        lines = [f"📅 {day} · {len(day_df)} exercises"]
-        for _, rr in day_df.iterrows():
-            sets = ", ".join([s.strip() for s in str(rr["sets"]).split("|")])
-            lines.append(f"{rr['exercise']}: {sets}")
-        day_text = "\n".join(lines)
+                    if open_key not in st.session_state:
+                        st.session_state[open_key] = False
 
-        # Safe keys
-        day_id = re.sub(r"[^0-9A-Za-z_]+", "_", str(day))
-        open_key = f"open_day_{day_id}"
-        toggle_key = f"toggle_day_{day_id}"
-        copy_key = f"copy_day_{day_id}"
+                    is_open = bool(st.session_state[open_key])
+                    arrow = "▼" if is_open else "▶"
 
-        if open_key not in st.session_state:
-            st.session_state[open_key] = False
-
-        is_open = bool(st.session_state[open_key])
-        arrow = "▼" if is_open else "▶"
-
-        # Header row: left is "accordion button", right is copy button
-        left_col, right_col = st.columns([10, 2], vertical_alignment="center")
-
-        with left_col:
-            if st.button(
-                f"{arrow} 📅 {day} · {len(day_df)} entries",
-                key=toggle_key,
-                use_container_width=True,
-            ):
-                st.session_state[open_key] = not st.session_state[open_key]
-                st.rerun()
-
-        with right_col:
-            copy_to_clipboard_button(day_text, key=copy_key, label="📋 Copy")
-
-        # Expanded content
-        if st.session_state[open_key]:
-            for _, r in day_df.iterrows():
-                workout_id = int(r["workout_id"])
-
-                l, m, rr = st.columns([6, 2, 2], vertical_alignment="center")
-
-                with l:
-                    st.markdown(f"**{r['exercise']}**")
-                    chips = "".join(
-                        [f'<span class="set-chip">{s.strip()}</span>' for s in str(r["sets"]).split("|")]
-                    )
-                    st.markdown(f'<div class="sets-wrap">{chips}</div>', unsafe_allow_html=True)
-
-                with m:
-                    pop = st.popover("✏️ Edit", use_container_width=True)
-                    with pop:
-                        data = get_workout_for_edit_cached(workout_id)
-                        edit_ns = f"edit_{workout_id}"
-                        edit_sets_key = f"{edit_ns}_sets"
-                        edit_type_key = f"{edit_ns}_type"
-
-                        if edit_sets_key not in st.session_state:
-                            initial_sets: list[dict] = []
-                            for _, srow in data["sets"].iterrows():
-                                t = int(srow.get("time_sec", 0) or 0)
-                                if t > 0:
-                                    initial_sets.append({"time_sec": t})
-                                else:
-                                    initial_sets.append(
-                                        {
-                                            "weight": int(float(srow.get("weight", 0) or 0)),
-                                            "reps": int(float(srow.get("reps", 0) or 0)),
-                                        }
-                                    )
-                            if not initial_sets:
-                                initial_sets = [{"weight": 0, "reps": 0}]
-                            st.session_state[edit_sets_key] = initial_sets
-
-                        if edit_type_key not in st.session_state:
-                            st.session_state[edit_type_key] = EXERCISE_TYPE.get(data["exercise"], "light")
-
-                        edit_date_key = f"{edit_ns}_date"
-                        if edit_date_key not in st.session_state:
-                            st.session_state[edit_date_key] = pd.to_datetime(data["workout_date"]).date()
-
-                        edit_ex_key = f"{edit_ns}_exercise"
-                        if edit_ex_key not in st.session_state:
-                            st.session_state[edit_ex_key] = data["exercise"]
-
-                        edit_exercise = st.selectbox("Exercise", ex_df["name"].tolist(), key=edit_ex_key)
-                        st.date_input(
-                            "📅 Date",
-                            min_value=date(2020, 1, 1),
-                            max_value=date.today(),
-                            key=edit_date_key,
-                        )
-
-                        new_type = EXERCISE_TYPE.get(edit_exercise, "light")
-                        prev_type = st.session_state[edit_type_key]
-                        if new_type != prev_type:
-                            st.session_state[edit_type_key] = new_type
-                            st.session_state[edit_sets_key] = (
-                                [{"time_sec": 0}] if new_type == "timed" else [{"weight": 0, "reps": 0}]
-                            )
-                            for i in range(1, 60):
-                                st.session_state.pop(f"{edit_ns}_w_{i}", None)
-                                st.session_state.pop(f"{edit_ns}_r_{i}", None)
-                                st.session_state.pop(f"{edit_ns}_t_{i}", None)
-                            st.rerun()
-
-                        edit_profile = TYPE_PROFILES[new_type]
-                        edit_mode = edit_profile["mode"]
-
-                        for idx, s in enumerate(st.session_state[edit_sets_key], start=1):
-                            if edit_mode == "time":
-                                key_t = f"{edit_ns}_t_{idx}"
-                                if key_t not in st.session_state:
-                                    st.session_state[key_t] = int(s.get("time_sec", 0) or 0)
-                                st.selectbox(
-                                    f"Set {idx} — Time (sec)",
-                                    edit_profile["time_options"],
-                                    key=key_t,
-                                )
-                            else:
-                                cew, cer = st.columns(2)
-                                key_w = f"{edit_ns}_w_{idx}"
-                                key_r = f"{edit_ns}_r_{idx}"
-                                if key_w not in st.session_state:
-                                    st.session_state[key_w] = int(s.get("weight", 0) or 0)
-                                if key_r not in st.session_state:
-                                    st.session_state[key_r] = int(s.get("reps", 0) or 0)
-                                with cew:
-                                    st.selectbox(
-                                        f"Set {idx} — Weight (kg)",
-                                        edit_profile["weight_options"],
-                                        key=key_w,
-                                    )
-                                with cer:
-                                    st.selectbox(
-                                        f"Set {idx} — Reps",
-                                        edit_profile["reps_options"],
-                                        key=key_r,
-                                    )
-
-                        st.session_state[edit_sets_key] = read_sets_from_widgets(
-                            edit_ns, len(st.session_state[edit_sets_key]), edit_mode
-                        )
-
-                        e1, e2 = st.columns(2)
-                        if e1.button("➕ Add set", key=f"{edit_ns}_add_set", use_container_width=True):
-                            current_rows = read_sets_from_widgets(
-                                edit_ns, len(st.session_state[edit_sets_key]), edit_mode
-                            )
-                            st.session_state[edit_sets_key] = current_rows
-                            if edit_mode == "time":
-                                v = int(current_rows[-1].get("time_sec", 0))
-                                st.session_state[edit_sets_key].append({"time_sec": v})
-                                st.session_state[f"{edit_ns}_t_{len(st.session_state[edit_sets_key])}"] = v
-                            else:
-                                w = int(current_rows[-1].get("weight", 0))
-                                reps = int(current_rows[-1].get("reps", 0))
-                                st.session_state[edit_sets_key].append({"weight": w, "reps": reps})
-                                st.session_state[f"{edit_ns}_w_{len(st.session_state[edit_sets_key])}"] = w
-                                st.session_state[f"{edit_ns}_r_{len(st.session_state[edit_sets_key])}"] = reps
-                            st.rerun()
-
-                        if e2.button(
-                            "➖ Remove set",
-                            key=f"{edit_ns}_rm_set",
+                    left_col, right_col = st.columns([10, 2], vertical_alignment="center")
+                    with left_col:
+                        # Fixed: correct plural form for entries count
+                        label = plural_entries(len(day_df))
+                        if st.button(
+                            f"{arrow} 📅 {day} · {label}",
+                            key=toggle_key,
                             use_container_width=True,
-                            disabled=len(st.session_state[edit_sets_key]) <= 1,
                         ):
-                            current_rows = read_sets_from_widgets(
-                                edit_ns, len(st.session_state[edit_sets_key]), edit_mode
+                            st.session_state[open_key] = not st.session_state[open_key]
+                            st.rerun()
+                    with right_col:
+                        copy_to_clipboard_button(day_text, key=copy_key, label="📋 Copy")
+
+                    if st.session_state[open_key]:
+                        for _, r in day_df.iterrows():
+                            workout_id = int(r["workout_id"])
+                            is_pr = pr_workout_ids.get(workout_id, False)
+
+                            # Workout card
+                            pr_badge = '<span class="pr-badge">🏆 PR</span>' if is_pr else ''
+                            chips = "".join(
+                                [f'<span class="set-chip">{s.strip()}</span>' for s in str(r["sets"]).split("|")]
                             )
-                            st.session_state[edit_sets_key] = current_rows
-                            last_idx = len(st.session_state[edit_sets_key])
-                            st.session_state[edit_sets_key] = st.session_state[edit_sets_key][:-1]
-                            st.session_state.pop(f"{edit_ns}_w_{last_idx}", None)
-                            st.session_state.pop(f"{edit_ns}_r_{last_idx}", None)
-                            st.session_state.pop(f"{edit_ns}_t_{last_idx}", None)
-                            st.rerun()
+                            st.markdown(
+                                f"""
+                                <div class="workout-card">
+                                    <div class="workout-card-exercise">{r['exercise']}{pr_badge}</div>
+                                    <div class="sets-wrap">{chips}</div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
 
-                        s1, s2 = st.columns(2)
-                        if s1.button("Save changes", key=f"{edit_ns}_save", use_container_width=True):
-                            try:
-                                rows = st.session_state[edit_sets_key]
-                                if edit_mode == "time":
-                                    cleaned = [x for x in rows if int(x.get("time_sec", 0)) > 0]
-                                    normalized = [
-                                        {"weight": 0, "reps": 0, "time_sec": int(x["time_sec"])} for x in cleaned
-                                    ]
-                                else:
-                                    cleaned = [
-                                        x
-                                        for x in rows
-                                        if int(x.get("weight", 0)) > 0 and int(x.get("reps", 0)) > 0
-                                    ]
-                                    normalized = [
-                                        {
-                                            "weight": int(x["weight"]),
-                                            "reps": int(x["reps"]),
-                                            "time_sec": None,
-                                        }
-                                        for x in cleaned
-                                    ]
+                            action_l, action_m, action_r = st.columns([6, 2, 2])
 
-                                if not normalized:
-                                    st.error("Add at least one filled set.")
-                                else:
-                                    ex_id = int(ex_df.loc[ex_df["name"] == edit_exercise, "id"].iloc[0])
-                                    update_workout(
-                                        conn,
-                                        workout_id,
-                                        str(st.session_state[edit_date_key]),
-                                        ex_id,
-                                        normalized,
+                            with action_m:
+                                pop = st.popover("✏️ Edit", use_container_width=True)
+                                with pop:
+                                    data = get_workout_for_edit_cached(workout_id)
+                                    edit_ns = f"edit_{workout_id}"
+                                    edit_sets_key = f"{edit_ns}_sets"
+                                    edit_type_key = f"{edit_ns}_type"
+
+                                    if edit_sets_key not in st.session_state:
+                                        initial_sets: list[dict] = []
+                                        for _, srow in data["sets"].iterrows():
+                                            t = int(srow.get("time_sec", 0) or 0)
+                                            if t > 0:
+                                                initial_sets.append({"time_sec": t})
+                                            else:
+                                                initial_sets.append({
+                                                    "weight": int(float(srow.get("weight", 0) or 0)),
+                                                    "reps": int(float(srow.get("reps", 0) or 0)),
+                                                })
+                                        if not initial_sets:
+                                            initial_sets = [{"weight": 0, "reps": 0}]
+                                        st.session_state[edit_sets_key] = initial_sets
+
+                                    if edit_type_key not in st.session_state:
+                                        st.session_state[edit_type_key] = EXERCISE_TYPE.get(data["exercise"], "light")
+
+                                    edit_date_key = f"{edit_ns}_date"
+                                    if edit_date_key not in st.session_state:
+                                        st.session_state[edit_date_key] = pd.to_datetime(data["workout_date"]).date()
+
+                                    edit_ex_key = f"{edit_ns}_exercise"
+                                    if edit_ex_key not in st.session_state:
+                                        st.session_state[edit_ex_key] = data["exercise"]
+
+                                    edit_exercise = st.selectbox("Exercise", ex_df["name"].tolist(), key=edit_ex_key)
+                                    st.date_input(
+                                        "📅 Date",
+                                        min_value=date(2020, 1, 1),
+                                        max_value=date.today(),
+                                        key=edit_date_key,
                                     )
-                                    st.success("Updated ✅")
-                                    st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Update failed: {e}")
 
-                        if s2.button("Cancel", key=f"{edit_ns}_cancel", use_container_width=True):
-                            st.rerun()
+                                    new_type = EXERCISE_TYPE.get(edit_exercise, "light")
+                                    prev_type = st.session_state[edit_type_key]
+                                    if new_type != prev_type:
+                                        st.session_state[edit_type_key] = new_type
+                                        st.session_state[edit_sets_key] = (
+                                            [{"time_sec": 0}] if new_type == "timed" else [{"weight": 0, "reps": 0}]
+                                        )
+                                        for i in range(1, 60):
+                                            st.session_state.pop(f"{edit_ns}_w_{i}", None)
+                                            st.session_state.pop(f"{edit_ns}_r_{i}", None)
+                                            st.session_state.pop(f"{edit_ns}_t_{i}", None)
+                                        st.rerun()
 
-                with rr:
-                    pop = st.popover("🗑 Delete", use_container_width=True)
-                    with pop:
-                        st.write("Delete this entry?")
-                        confirm = st.checkbox("Confirm", key=f"confirm_{workout_id}")
-                        if st.button("Delete", key=f"del_{workout_id}", disabled=not confirm):
-                            try:
-                                delete_workout(conn, workout_id)
-                                st.success("Deleted ✅")
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Delete failed: {e}")
+                                    edit_profile = TYPE_PROFILES[new_type]
+                                    edit_mode = edit_profile["mode"]
 
-            st.markdown("---")
+                                    for idx, s in enumerate(st.session_state[edit_sets_key], start=1):
+                                        if edit_mode == "time":
+                                            key_t = f"{edit_ns}_t_{idx}"
+                                            if key_t not in st.session_state:
+                                                st.session_state[key_t] = int(s.get("time_sec", 0) or 0)
+                                            st.selectbox(f"Set {idx} — Time (sec)", edit_profile["time_options"], key=key_t)
+                                        else:
+                                            cew, cer = st.columns(2)
+                                            key_w = f"{edit_ns}_w_{idx}"
+                                            key_r = f"{edit_ns}_r_{idx}"
+                                            if key_w not in st.session_state:
+                                                st.session_state[key_w] = int(s.get("weight", 0) or 0)
+                                            if key_r not in st.session_state:
+                                                st.session_state[key_r] = int(s.get("reps", 0) or 0)
+                                            with cew:
+                                                st.selectbox(f"Set {idx} — Weight (kg)", edit_profile["weight_options"], key=key_w)
+                                            with cer:
+                                                st.selectbox(f"Set {idx} — Reps", edit_profile["reps_options"], key=key_r)
+
+                                    st.session_state[edit_sets_key] = read_sets_from_widgets(
+                                        edit_ns, len(st.session_state[edit_sets_key]), edit_mode
+                                    )
+
+                                    e1, e2 = st.columns(2)
+                                    if e1.button("➕ Add set", key=f"{edit_ns}_add_set", use_container_width=True):
+                                        current_rows = read_sets_from_widgets(edit_ns, len(st.session_state[edit_sets_key]), edit_mode)
+                                        st.session_state[edit_sets_key] = current_rows
+                                        if edit_mode == "time":
+                                            v = int(current_rows[-1].get("time_sec", 0))
+                                            st.session_state[edit_sets_key].append({"time_sec": v})
+                                            st.session_state[f"{edit_ns}_t_{len(st.session_state[edit_sets_key])}"] = v
+                                        else:
+                                            w = int(current_rows[-1].get("weight", 0))
+                                            reps = int(current_rows[-1].get("reps", 0))
+                                            st.session_state[edit_sets_key].append({"weight": w, "reps": reps})
+                                            st.session_state[f"{edit_ns}_w_{len(st.session_state[edit_sets_key])}"] = w
+                                            st.session_state[f"{edit_ns}_r_{len(st.session_state[edit_sets_key])}"] = reps
+                                        st.rerun()
+
+                                    if e2.button("➖ Remove set", key=f"{edit_ns}_rm_set", use_container_width=True,
+                                                 disabled=len(st.session_state[edit_sets_key]) <= 1):
+                                        current_rows = read_sets_from_widgets(edit_ns, len(st.session_state[edit_sets_key]), edit_mode)
+                                        st.session_state[edit_sets_key] = current_rows
+                                        last_idx = len(st.session_state[edit_sets_key])
+                                        st.session_state[edit_sets_key] = st.session_state[edit_sets_key][:-1]
+                                        st.session_state.pop(f"{edit_ns}_w_{last_idx}", None)
+                                        st.session_state.pop(f"{edit_ns}_r_{last_idx}", None)
+                                        st.session_state.pop(f"{edit_ns}_t_{last_idx}", None)
+                                        st.rerun()
+
+                                    s1, s2 = st.columns(2)
+                                    if s1.button("Save changes", key=f"{edit_ns}_save", use_container_width=True):
+                                        try:
+                                            rows = st.session_state[edit_sets_key]
+                                            if edit_mode == "time":
+                                                cleaned = [x for x in rows if int(x.get("time_sec", 0)) > 0]
+                                                normalized = [{"weight": 0, "reps": 0, "time_sec": int(x["time_sec"])} for x in cleaned]
+                                            else:
+                                                cleaned = [x for x in rows if int(x.get("weight", 0)) > 0 and int(x.get("reps", 0)) > 0]
+                                                normalized = [{"weight": int(x["weight"]), "reps": int(x["reps"]), "time_sec": None} for x in cleaned]
+                                            if not normalized:
+                                                st.error("Add at least one filled set.")
+                                            else:
+                                                ex_id = int(ex_df.loc[ex_df["name"] == edit_exercise, "id"].iloc[0])
+                                                update_workout(conn, workout_id, str(st.session_state[edit_date_key]), ex_id, normalized)
+                                                st.success("Updated ✅")
+                                                st.rerun()
+                                        except Exception as e:
+                                            conn.rollback()
+                                            st.error(f"Update failed: {e}")
+
+                                    if s2.button("Cancel", key=f"{edit_ns}_cancel", use_container_width=True):
+                                        st.rerun()
+
+                            with action_r:
+                                pop = st.popover("🗑 Delete", use_container_width=True)
+                                with pop:
+                                    st.write("Delete this entry?")
+                                    confirm = st.checkbox("Confirm", key=f"confirm_{workout_id}")
+                                    if st.button("Delete", key=f"del_{workout_id}", disabled=not confirm):
+                                        try:
+                                            delete_workout(conn, workout_id)
+                                            st.success("Deleted ✅")
+                                            st.rerun()
+                                        except Exception as e:
+                                            conn.rollback()
+                                            st.error(f"Delete failed: {e}")
+
+                        st.markdown("---")
+
 
 # =========================
 # TAB: Progress
@@ -1130,11 +1271,9 @@ with tab_progress:
                 y -= 1
             st.session_state.cal_month, st.session_state.cal_year = m, y
             st.rerun()
-
     with c2:
         month_name = calendar.month_name[st.session_state.cal_month]
         st.markdown(f"### {month_name} {st.session_state.cal_year}")
-
     with c3:
         if st.button("▶", key="cal_next"):
             m = st.session_state.cal_month + 1
@@ -1184,8 +1323,9 @@ with tab_progress:
             else:
                 trained = d in entries_map
                 cls = "cal-day cal-trained" if trained else "cal-day"
+                # Fixed: correct Russian plural
                 cnt = (
-                    f'<span class="cal-count">{entries_map[d]} записи</span>'
+                    f'<span class="cal-count">{plural_entries(entries_map[d])}</span>'
                     if trained
                     else '<span class="cal-count">&nbsp;</span>'
                 )
@@ -1202,35 +1342,110 @@ with tab_progress:
     ex_names = ex_df["name"].tolist()
     if not ex_names:
         st.info("No exercises.")
-        st.stop()
+    else:
+        ex = st.selectbox("Exercise", ex_names, key="progress_exercise_select")
 
-    ex = st.selectbox("Exercise", ex_names, key="progress_exercise_select")
+        t_p = time.time()
+        df = get_progress_daily(ex)
+        dbg(f"progress_sets: {time.time() - t_p:.3f}s | rows={len(df)}")
 
-    t_p = time.time()
-    df = get_progress_daily(ex)
-    dbg(f"progress_sets: {time.time() - t_p:.3f}s | rows={len(df)}")
+        if df.empty:
+            st.info("No weight+reps sets for this exercise yet.")
+        else:
+            df["workout_date"] = pd.to_datetime(df["workout_date"])
 
-    if df.empty:
-        st.info("No weight+reps sets for this exercise yet.")
-        st.stop()
+            # --- Dark theme chart ---
+            plt.style.use("dark_background")
+            fig, ax1 = plt.subplots(figsize=(9, 4))
+            fig.patch.set_alpha(0.0)
+            ax1.set_facecolor("none")
 
-    # Ensure datetime on x-axis
-    df["workout_date"] = pd.to_datetime(df["workout_date"])
+            color_1rm = "#69F0AE"
+            color_tw = "#82B1FF"
 
-    fig, ax1 = plt.subplots()
-    ax1.plot(df["workout_date"], df["est_1rm"])
-    ax1.set_title(f"{ex} — Estimated 1RM & Top weight by day")
-    ax1.set_xlabel("Date")
-    ax1.set_ylabel("Estimated 1RM")
-    plt.xticks(rotation=45)
+            ax1.plot(df["workout_date"], df["est_1rm"], color=color_1rm, linewidth=2.5,
+                     marker="o", markersize=5, label="Est. 1RM")
+            ax1.set_xlabel("Date", color="white", fontsize=11)
+            ax1.set_ylabel("Estimated 1RM (kg)", color=color_1rm, fontsize=11)
+            ax1.tick_params(axis="y", labelcolor=color_1rm)
+            ax1.tick_params(axis="x", colors="white", rotation=30)
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+            ax1.xaxis.set_major_locator(mdates.AutoDateLocator())
 
-    ax2 = ax1.twinx()
-    ax2.plot(df["workout_date"], df["top_weight"])
-    ax2.set_ylabel("Top weight (kg)")
+            ax2 = ax1.twinx()
+            ax2.set_facecolor("none")
+            ax2.plot(df["workout_date"], df["top_weight"], color=color_tw, linewidth=2,
+                     linestyle="--", marker="s", markersize=4, label="Top weight")
+            ax2.set_ylabel("Top weight (kg)", color=color_tw, fontsize=11)
+            ax2.tick_params(axis="y", labelcolor=color_tw)
 
-    st.pyplot(fig)
-    plt.close(fig)
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left",
+                       facecolor="none", edgecolor="rgba(255,255,255,0.2)", labelcolor="white")
 
-    st.metric("🏆 Best estimated 1RM", f"{float(df['est_1rm'].max()):.1f}")
+            ax1.set_title(f"{ex} — 1RM & Top weight", color="white", fontsize=13, pad=12)
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+
+            best_1rm = float(df["est_1rm"].max())
+            st.metric("🏆 Best estimated 1RM", f"{best_1rm:.1f} kg")
+
+            # =========================
+            # NEW: Progress to next PR
+            # =========================
+            all_prs = get_all_prs()
+            current_pr = all_prs.get(ex, 0)
+            last_session_1rm = float(df["est_1rm"].iloc[-1])
+
+            next_pr_target = current_pr * 1.025  # +2.5% above current PR
+            progress_pct = min((last_session_1rm / next_pr_target) * 100, 100) if next_pr_target > 0 else 0
+            kg_to_pr = max(next_pr_target - last_session_1rm, 0)
+
+            st.markdown(
+                f"""
+                <div class="pr-progress-wrap">
+                    <div style="font-size:15px; font-weight:600;">📊 Progress to next PR</div>
+                    <div style="font-size:13px; opacity:0.75; margin-top:4px;">
+                        Last session: <b>{last_session_1rm:.1f} kg</b> &nbsp;·&nbsp;
+                        Current PR: <b>{current_pr:.1f} kg</b> &nbsp;·&nbsp;
+                        {"🏆 PR!" if kg_to_pr == 0 else f"До рекорда: <b>{kg_to_pr:.1f} kg</b>"}
+                    </div>
+                    <div class="pr-bar-bg">
+                        <div class="pr-bar-fill" style="width:{progress_pct:.1f}%"></div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # =========================
+            # NEW: Weekly volume
+            # =========================
+            st.divider()
+            st.markdown("## 📦 Weekly volume")
+
+            vol_df = get_weekly_volume(ex, weeks=10)
+            if vol_df.empty:
+                st.info("Not enough data for weekly volume.")
+            else:
+                max_vol = float(vol_df["volume"].max())
+                vol_html = ['<div style="margin-top:8px">']
+                for _, row in vol_df.iterrows():
+                    week_label = pd.to_datetime(row["week_start"]).strftime("%d %b")
+                    vol = float(row["volume"])
+                    bar_pct = (vol / max_vol * 100) if max_vol > 0 else 0
+                    vol_html.append(f"""
+                    <div class="vol-row">
+                        <div class="vol-label">{week_label}</div>
+                        <div class="vol-bar-bg">
+                            <div class="vol-bar-fill" style="width:{bar_pct:.1f}%"></div>
+                        </div>
+                        <div class="vol-value">{int(vol):,} kg</div>
+                    </div>
+                    """)
+                vol_html.append("</div>")
+                st.markdown("".join(vol_html), unsafe_allow_html=True)
 
 dbg(f"Render: {time.time() - start_total:.3f} sec")
