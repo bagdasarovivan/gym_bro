@@ -535,10 +535,10 @@ def get_overall_stats() -> dict:
     today = date.today()
     month_start = today.replace(day=1)
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(DISTINCT id) FROM workouts")
+        cur.execute("SELECT COUNT(DISTINCT workout_date) FROM workouts")
         total_workouts = int(cur.fetchone()[0] or 0)
         cur.execute(
-            "SELECT COUNT(DISTINCT id) FROM workouts WHERE workout_date >= %s",
+            "SELECT COUNT(DISTINCT workout_date) FROM workouts WHERE workout_date >= %s",
             (str(month_start),),
         )
         month_workouts = int(cur.fetchone()[0] or 0)
